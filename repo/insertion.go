@@ -22,6 +22,8 @@ type RepoCommandParam struct {
 	start_block_id  uint64   // Start block ID for segmented data(interest)
 	end_block_id    uint64
 	forwarding_hint enc.Name
+	timeout         time.Duration
+	warmup          time.Duration
 }
 
 func CmdRepoInsert() *cobra.Command {
@@ -31,6 +33,8 @@ func CmdRepoInsert() *cobra.Command {
 		start_block_id:  0,          // Start block ID for segmented data(interest)
 		end_block_id:    0,
 		forwarding_hint: enc.Name{},
+		timeout:         300 * time.Second,
+		warmup:          3 * time.Second,
 	}
 
 	cmd := &cobra.Command{
@@ -42,7 +46,6 @@ Input is read from stdin by default.`,
 		Example: "ndnd repo insert /my/data/path/ test server",
 		Run:     t.run,
 	}
-
 	return cmd
 }
 
@@ -183,11 +186,11 @@ func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
 
 	println("send BlobFetch command")
 	// Send command to repo
+	jobCh := make(chan string, 1)
 	done := make(chan error, 1)
 	client.ExpressCommand(t.forwarding_hint, cmdName, payload, func(w enc.Wire, err error) {
 		if err != nil {
 			done <- err
-
 			return
 		}
 		res, err := tlv.ParseRepoCmdRes(enc.NewWireView(w), false)
@@ -199,20 +202,25 @@ func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
 			done <- fmt.Errorf("status=%d msg=%s", res.Status, res.Message)
 			return
 		}
+		if res.Status == 200 {
+			jobCh <- res.Message
+			return
+		}
 		done <- nil
 	})
 
 	// Wait for response or timeout
 	select {
 	case err := <-done:
-		stopAnnounce()
 		if err != nil {
 			fmt.Println("failed:", err)
 			return
 		}
+	case jobName := <-jobCh:
+		fmt.Printf("insert job started with job name: %s\n", jobName)
 		fmt.Println("insert command success")
-	case <-time.After(180 * time.Second):
-		stopAnnounce()
-		fmt.Println("insert command timeout")
+	case <-time.After(t.timeout):
+		fmt.Printf("insert command timeout after %s\n", t.timeout)
 	}
+	// TODO: Add the pooling logic to check job status using jobName, and print the final result when job is done.
 }

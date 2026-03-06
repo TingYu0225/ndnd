@@ -1,8 +1,11 @@
 package repo
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/named-data/ndnd/repo/tlv"
 	enc "github.com/named-data/ndnd/std/encoding"
@@ -20,6 +23,7 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 	cmd, err := tlv.ParseRepoCmd(enc.NewWireView(wire), false)
 	if err != nil {
 		log.Warn(r, "Failed to parse management command", "err", err)
+		_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "failed to parse management command"}).Encode())
 		return
 	}
 
@@ -33,7 +37,93 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 		return
 	}
 
+	if cmd.BlobFetch != nil {
+		r.handleBlobFetch(cmd.BlobFetch, reply)
+		return
+	}
+
 	log.Warn(r, "Unknown management command received")
+	_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "unknown management command"}).Encode())
+}
+
+// handleBlobFetch handles one-shot blob insertion commands sent to repo management endpoint.
+func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
+	// first ack to client with job ID
+	// TODO: change /ndnd/server to autogenerate
+	jobNameStr := fmt.Sprintf("/ndnd/server/insert-status/%d", time.Now().UnixNano())
+	reply((&tlv.RepoCmdRes{Status: 200, Message: jobNameStr}).Encode())
+	jobName, err := enc.NameFromStr(jobNameStr)
+	if err != nil {
+		log.Error(r, "Failed to create job name", "err", err)
+		return
+	}
+	var payload []byte = []byte("done")
+	println("BlobFetch Name:", cmd.Name.Name.String())
+	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) {
+		//  build file for received file
+		file, err := os.Create("/tmp/" + cmd.Name.Name.At(0).String() + ".bin")
+		if err != nil {
+			println("Failed to create file:", err)
+			return
+		}
+		defer file.Close()
+
+		println("Starting fetch for:", cmd.Name.Name.String())
+		if cmd.Name != nil && len(cmd.Name.Name) > 0 {
+			done := make(chan error, 1)
+			println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
+			r.client.ConsumeExt(ndn.ConsumeExtArgs{
+				Name:           cmd.Name.Name,
+				TryStore:       true,
+				IgnoreValidity: optional.Some(r.config.IgnoreValidity),
+				Callback: func(state ndn.ConsumeState) {
+					println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
+					if state.Error() != nil { // fetch failed
+						println("DEBUG: Error in fetch:", state.Error().Error())
+						select {
+						case done <- state.Error():
+						default:
+						}
+						return
+					}
+					for _, chunk := range state.Content() {
+						println("DEBUG: Received chunk of size:", len(chunk))
+						file.Write(chunk)
+					}
+					if state.IsComplete() { // fetch succeeded
+						println("DEBUG: Fetch complete")
+						select {
+						case done <- nil:
+						default:
+						}
+					}
+				},
+			})
+			println("DEBUG: ConsumeExt returned, waiting for done channel...")
+
+			select {
+			case err := <-done: // fetch completed or failedq
+				if err != nil {
+					payload = []byte("failed:" + err.Error())
+					println("DEBUG: Fetch failed with error:", err.Error())
+				}
+			case <-time.After(8 * time.Second):
+				payload = []byte("failed: fetch timeout")
+				println("DEBUG: select timeout")
+			}
+
+			println("DEBUG: reply completed")
+			return
+		}
+	} else {
+		payload = []byte("failed: invalid command parameters")
+	}
+	_, _ = r.client.Produce(ndn.ProduceArgs{
+		Name:    jobName,
+		Content: enc.Wire{payload},
+	})
+	r.client.AnnouncePrefix(ndn.Announcement{Name: jobName, Expose: true})
+
 }
 
 // (AI GENERATED DESCRIPTION): Handles a `SyncJoin` command by starting an SVS session when the protocol is `SyncProtocolSvsV3`, or returning an error status if the protocol is unknown or the session fails to start.
