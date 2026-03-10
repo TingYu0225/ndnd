@@ -42,6 +42,7 @@ func (r *Repo) String() string {
 	return "repo"
 }
 
+// TODO
 // (AI GENERATED DESCRIPTION): Initializes and starts the NDN data repository by setting up storage, network engine, keychain, trust configuration, and object client, then attaching the management command handler and announcing its prefix.
 func (r *Repo) Start() (err error) {
 	log.Info(r, "Starting NDN Data Repository", "dir", r.config.StorageDir)
@@ -84,7 +85,24 @@ func (r *Repo) Start() (err error) {
 
 	// Start NDN Object API client
 	r.client = object.NewClient(r.engine, r.store, trust)
+	// r.client = object.NewClient(r.engine, r.store, nil)
 	if err := r.client.Start(); err != nil {
+		return err
+	}
+
+	// Attach status interest handler (for insertion/deletion)
+	// use engine: no need to validate, just return the status from the store
+	statusPrefix := r.config.NameN.Append(enc.NewGenericComponent("status"))
+	if err := r.engine.AttachHandler(statusPrefix, func(args ndn.InterestHandlerArgs) {
+		intName := args.Interest.Name()
+
+		wire, err := r.store.Get(intName, args.Interest.CanBePrefix())
+		if err != nil || wire == nil {
+			return
+		}
+
+		args.Reply(enc.Wire{wire})
+	}); err != nil {
 		return err
 	}
 
