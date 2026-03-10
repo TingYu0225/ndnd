@@ -21,6 +21,7 @@ import (
 // (AI GENERATED DESCRIPTION): Parses a repository management command from the received wire and dispatches it to the sync‑join handler if present, otherwise logs a warning about an unknown command.
 func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) {
 	cmd, err := tlv.ParseRepoCmd(enc.NewWireView(wire), false)
+	println("DEBUG: Received management command:", cmd)
 	if err != nil {
 		log.Warn(r, "Failed to parse management command", "err", err)
 		_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "failed to parse management command"}).Encode())
@@ -41,89 +42,141 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 		r.handleBlobFetch(cmd.BlobFetch, reply)
 		return
 	}
-
+	// println("DEBUG: Received management command that is not SyncJoin, SyncLeave, or BlobFetch")
 	log.Warn(r, "Unknown management command received")
 	_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "unknown management command"}).Encode())
 }
 
-// handleBlobFetch handles one-shot blob insertion commands sent to repo management endpoint.
+// handleBlobFetch handles one-shot blob insertion/deletion commands sent to repo management endpoint.
 func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
 	// first ack to client with job ID
 	// TODO: change /ndnd/server to autogenerate
-	jobNameStr := fmt.Sprintf("/ndnd/server/insert-status/%d", time.Now().UnixNano())
-	reply((&tlv.RepoCmdRes{Status: 200, Message: jobNameStr}).Encode())
-	jobName, err := enc.NameFromStr(jobNameStr)
+
+	// base := r.config.NameN.Append(enc.NewGenericComponent("status"))
+	jobNamePrefix := r.config.NameN.Append(
+		enc.NewGenericComponent("status"),
+		enc.NewGenericComponent("insert"),
+		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
+	)
+	progressName := jobNamePrefix.Append(enc.NewGenericComponent("heartbeat"))
+	resultName := jobNamePrefix.Append(enc.NewGenericComponent("result"))
+	jobNameStr := jobNamePrefix.String()
+
+	reply((&tlv.RepoCmdRes{Status: 200, Message: jobNameStr}).Encode()) // reply that job is accepted with job name for client to check status
+	jobNamePrefix, err := enc.NameFromStr(jobNameStr)
 	if err != nil {
 		log.Error(r, "Failed to create job name", "err", err)
 		return
 	}
-	var payload []byte = []byte("done")
 	println("BlobFetch Name:", cmd.Name.Name.String())
-	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) {
-		//  build file for received file
-		file, err := os.Create("/tmp/" + cmd.Name.Name.At(0).String() + ".bin")
-		if err != nil {
-			println("Failed to create file:", err)
-			return
-		}
-		defer file.Close()
 
-		println("Starting fetch for:", cmd.Name.Name.String())
-		if cmd.Name != nil && len(cmd.Name.Name) > 0 {
-			done := make(chan error, 1)
-			println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
-			r.client.ConsumeExt(ndn.ConsumeExtArgs{
-				Name:           cmd.Name.Name,
-				TryStore:       true,
-				IgnoreValidity: optional.Some(r.config.IgnoreValidity),
-				Callback: func(state ndn.ConsumeState) {
-					println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
-					if state.Error() != nil { // fetch failed
-						println("DEBUG: Error in fetch:", state.Error().Error())
-						select {
-						case done <- state.Error():
-						default:
-						}
-						return
-					}
-					for _, chunk := range state.Content() {
-						println("DEBUG: Received chunk of size:", len(chunk))
-						file.Write(chunk)
-					}
-					if state.IsComplete() { // fetch succeeded
-						println("DEBUG: Fetch complete")
-						select {
-						case done <- nil:
-						default:
-						}
-					}
-				},
+	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) { // received insert command
+
+		doneCh := make(chan struct{})
+		defer close(doneCh)
+
+		publishProgress := func(heartbeat int) {
+			_, err := r.client.Produce(ndn.ProduceArgs{
+				Name:            progressName.WithVersion(enc.VersionUnixMicro),
+				Content:         enc.Wire{[]byte(fmt.Sprintf("%d", heartbeat))},
+				FreshnessPeriod: 2 * time.Second,
 			})
-			println("DEBUG: ConsumeExt returned, waiting for done channel...")
-
-			select {
-			case err := <-done: // fetch completed or failedq
-				if err != nil {
-					payload = []byte("failed:" + err.Error())
-					println("DEBUG: Fetch failed with error:", err.Error())
-				}
-			case <-time.After(8 * time.Second):
-				payload = []byte("failed: fetch timeout")
-				println("DEBUG: select timeout")
+			if err != nil {
+				println("DEBUG: failed to produce progress:", err.Error())
 			}
-
-			println("DEBUG: reply completed")
-			return
 		}
-	} else {
-		payload = []byte("failed: invalid command parameters")
-	}
-	_, _ = r.client.Produce(ndn.ProduceArgs{
-		Name:    jobName,
-		Content: enc.Wire{payload},
-	})
-	r.client.AnnouncePrefix(ndn.Announcement{Name: jobName, Expose: true})
 
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			heartbeat := 0
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-doneCh:
+					return
+				case <-ticker.C:
+					publishProgress(heartbeat)
+					heartbeat++
+				}
+			}
+		}()
+
+		go func() { // background goroutine to process the command and update status
+			//  build file for received file
+			var payload []byte = []byte("done")
+			file, err := os.Create("/tmp/" + cmd.Name.Name.At(-2).String() + ".bin")
+			if err != nil {
+				println("Failed to create file:", err)
+				return
+			}
+			defer file.Close()
+
+			println("Starting fetch for:", cmd.Name.Name.String())
+			if cmd.Name != nil && len(cmd.Name.Name) > 0 {
+				done := make(chan error, 1)
+				println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
+				r.client.ConsumeExt(ndn.ConsumeExtArgs{
+					Name:           cmd.Name.Name,
+					TryStore:       true,
+					IgnoreValidity: optional.Some(r.config.IgnoreValidity),
+					Callback: func(state ndn.ConsumeState) {
+						println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
+						if state.Error() != nil { // fetch failed
+							println("DEBUG: Error in fetch:", state.Error().Error())
+							select {
+							case done <- state.Error():
+							default:
+							}
+							return
+						}
+						for _, chunk := range state.Content() {
+							println("DEBUG: Received chunk of size:", len(chunk))
+							file.Write(chunk)
+						}
+						if state.IsComplete() { // fetch succeeded
+							println("DEBUG: Fetch complete")
+							select {
+							case done <- nil:
+							default:
+							}
+						}
+					},
+				})
+				println("DEBUG: ConsumeExt returned, waiting for done channel...")
+
+				select {
+				case err := <-done: // fetch completed or failedq
+					if err != nil {
+						payload = []byte("failed:" + err.Error())
+						println("DEBUG: Fetch failed with error:", err.Error())
+					}
+				case <-time.After(8 * time.Second):
+					payload = []byte("failed: fetch timeout")
+					println("DEBUG: select timeout")
+				}
+				_, err = r.client.Produce(ndn.ProduceArgs{
+					Name:            resultName.WithVersion(enc.VersionUnixMicro),
+					Content:         enc.Wire{payload},
+					FreshnessPeriod: 60 * time.Second,
+				})
+				if err != nil {
+					log.Error(r, "Failed to produce job result", "err", err)
+				}
+
+				println("DEBUG: reply completed")
+				return
+			}
+		}()
+	} else {
+		payload := []byte("failed: invalid command parameters")
+		_, _ = r.client.Produce(ndn.ProduceArgs{
+			Name:            jobNamePrefix.WithVersion(enc.VersionUnixMicro),
+			Content:         enc.Wire{payload},
+			FreshnessPeriod: 60 * time.Second,
+		})
+		return
+	}
 }
 
 // (AI GENERATED DESCRIPTION): Handles a `SyncJoin` command by starting an SVS session when the protocol is `SyncProtocolSvsV3`, or returning an error status if the protocol is unknown or the session fails to start.

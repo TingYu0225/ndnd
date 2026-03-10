@@ -3,16 +3,23 @@ package repo
 import (
 	"fmt"
 	"os"
-	"sync"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/named-data/ndnd/repo/tlv"
 	enc "github.com/named-data/ndnd/std/encoding"
 	"github.com/named-data/ndnd/std/engine"
+	"github.com/named-data/ndnd/std/log"
 	"github.com/named-data/ndnd/std/ndn"
 	spec "github.com/named-data/ndnd/std/ndn/spec_2022"
 	"github.com/named-data/ndnd/std/object"
 	"github.com/named-data/ndnd/std/object/storage"
+	sec "github.com/named-data/ndnd/std/security"
+	"github.com/named-data/ndnd/std/security/keychain"
+	"github.com/named-data/ndnd/std/security/trust_schema"
+	"github.com/named-data/ndnd/std/types/optional"
+	"github.com/named-data/ndnd/std/utils/toolutils"
 	"github.com/spf13/cobra"
 )
 
@@ -20,10 +27,8 @@ type RepoCommandParam struct {
 	file_path       string   // Input file path, or - for stdin
 	file_name       enc.Name // Data packet name, or a name prefix of segmented Data packets.
 	start_block_id  uint64   // Start block ID for segmented data(interest)
-	end_block_id    uint64
-	forwarding_hint enc.Name
-	timeout         time.Duration
-	warmup          time.Duration
+	end_block_id    uint64   // End block ID for segmented data(interest)
+	forwarding_hint enc.Name // target server's ndn prefix, e.g. /ndnd/server
 }
 
 func CmdRepoInsert() *cobra.Command {
@@ -33,63 +38,174 @@ func CmdRepoInsert() *cobra.Command {
 		start_block_id:  0,          // Start block ID for segmented data(interest)
 		end_block_id:    0,
 		forwarding_hint: enc.Name{},
-		timeout:         300 * time.Second,
-		warmup:          3 * time.Second,
 	}
 
 	cmd := &cobra.Command{
-		Use:   "insert FILE_PATH FILE_NAME SERVER_NDN_PREFIX",
-		Short: "Insert one Data packet into the server",
-		Long: `Create one Data packet from input bytes and ask the server to store it.
-Input is read from stdin by default.`,
+		Use:     "insert FILE_PATH SERVER_NDN_PREFIX CONFIG_FILE_PATH",
+		Short:   "Insert one file into the server",
+		Long:    `Create Data packets from input file and ask the server to store it.`,
 		Args:    cobra.ExactArgs(3),
-		Example: "ndnd repo insert /my/data/path/ test server",
+		Example: "ndnd repo insert /my/data/path/ /ndnd/server ./repo.sample.yml",
 		Run:     t.run,
 	}
+	cmd.Flags().String("filename", "", "filename")
 	return cmd
 }
 
 // checkInsertRequest checks the validity of the insert request and fills the command parameters.
-func checkInsertRequest(t *RepoCommandParam, filePath string, packetNameStr string, serverPrefixStr string) bool {
-	_, err := os.Stat(filePath) // check if file exists
+func checkInsertRequest(t *RepoCommandParam, args []string, cmd *cobra.Command) bool {
+
+	// check if file exists
+	t.file_path = args[0]
+	_, err := os.Stat(t.file_path)
 	if err != nil {
 		fmt.Println("read file failed:", err)
 		return false
 	}
 
-	fileName, err := enc.NameFromStr(packetNameStr) // decode packet name from string
+	// if fileName is not provided, use the base name
+	fileName, _ := cmd.Flags().GetString("filename")
+	if cmd.Flags().Changed("filename") {
+		fmt.Println("user provided --filename:", fileName)
+	} else {
+		fmt.Println("--filename not provided")
+		base := filepath.Base(t.file_path)
+		fileName = base[:len(base)-len(filepath.Ext(base))]
+	}
+
+	tempFileName, err := enc.NameFromStr(fileName) // decode packet name from string
 	if err != nil {
 		fmt.Println("invalid file name:", err)
 		return false
 	}
+	t.file_name = tempFileName
 
-	forwardingHint, err := enc.NameFromStr(serverPrefixStr)
+	forwardingHint, err := enc.NameFromStr(args[1])
 	if err != nil {
 		fmt.Println("invalid server prefix:", err)
 		return false
 	}
-
-	t.file_path = filePath
-	// t.file_name = globalConfig.NameN.Append(t.file_name) // prepend repo name to the file name
-	t.file_name = fileName
 	t.forwarding_hint = forwardingHint
+
+	fmt.Println("File:", t.file_path)
+	fmt.Println("File Name:", t.file_name)
+	fmt.Println("Server:", t.forwarding_hint)
+
 	return true
+
+}
+
+func waitJobDone(client ndn.Client, jobName string, serverPrefix enc.Name) error {
+	fmt.Println("Start waiting for job done with job name:", jobName)
+	jobBase, err := enc.NameFromStr(jobName)
+	if err != nil {
+		return fmt.Errorf("invalid job name: %w", err)
+	}
+
+	resultPrefix := jobBase.Append(enc.NewGenericComponent("result"))
+	heartbeatPrefix := jobBase.Append(enc.NewGenericComponent("heartbeat"))
+
+	// deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second) // check job status every second
+	idleTimeout := 10 * time.Second           // if job is processing for more than 5 seconds without status update, consider it failed and timeout
+	idleTimer := time.NewTimer(idleTimeout)
+	defer ticker.Stop()
+	defer idleTimer.Stop()
+	lastHeartbeat := ""
+
+	fetchText := func(name enc.Name) (string, error) { // send interest to fetch
+		resultCh := make(chan string, 1)
+		errCh := make(chan error, 1)
+
+		client.ExpressR(ndn.ExpressRArgs{
+			Name: name,
+			Config: &ndn.InterestConfig{
+				CanBePrefix: true,
+				MustBeFresh: true,
+				Lifetime:    optional.Some(2 * time.Second),
+			},
+			Retries: 0,
+			Callback: func(args ndn.ExpressCallbackArgs) {
+				if args.Result != ndn.InterestResultData {
+					errCh <- fmt.Errorf("%s", args.Result)
+					return
+				}
+				resultCh <- string(args.Data.Content().Join())
+			},
+		})
+		select {
+		case s := <-resultCh:
+			return s, nil
+		case err := <-errCh:
+			return "", err
+		case <-time.After(3 * time.Second):
+			return "", fmt.Errorf("local wait timeout")
+		}
+	}
+
+	for {
+		select {
+		case <-idleTimer.C:
+			return fmt.Errorf("wait job timeout: %s", jobName)
+
+		case <-ticker.C:
+			fmt.Println("Checking job result...", resultPrefix.String())
+
+			result, err := fetchText(resultPrefix) // fetch job result
+			if err == nil {
+				switch {
+				case result == "done":
+					fmt.Println("job done")
+					return nil
+				case strings.HasPrefix(result, "failed:"):
+					return fmt.Errorf("job failed: %s", strings.TrimPrefix(result, "failed:"))
+				default:
+					fmt.Printf("unexpected job result: %s\n", result)
+				}
+			}
+
+			fmt.Println("Checking heartbeat...", heartbeatPrefix.String())
+
+			hb, hbErr := fetchText(heartbeatPrefix)
+			if hbErr != nil {
+				fmt.Printf("heartbeat check failed: %v\n", hbErr)
+				continue
+			}
+
+			fmt.Printf("heartbeat: %s\n", hb)
+
+			if hb != "" && hb != lastHeartbeat {
+				lastHeartbeat = hb
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(idleTimeout)
+			}
+		}
+	}
 }
 
 // func insert(name enc.Name, start_block_id uint64, end_block_id uint64, client ndn.Client) error {
 
 // }
 
-func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
-	filePath := args[0]
-	fileName := args[1]
-	serverPrefix := args[2]
+func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
+	config := struct {
+		Repo *Config `json:"repo"`
+	}{
+		Repo: DefaultConfig(),
+	}
 
-	fmt.Println("File:", filePath)
-	fmt.Println("File Name:", fileName)
-	fmt.Println("Server:", serverPrefix)
+	toolutils.ReadYaml(&config, args[2])
 
-	if checkInsertRequest(t, filePath, fileName, serverPrefix) == false {
+	if err := config.Repo.Parse(); err != nil {
+		log.Fatal(nil, "Configuration error", "err", err)
+	}
+
+	if checkInsertRequest(t, args, cmd) == false {
 		return
 	}
 
@@ -103,7 +219,28 @@ func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
 
 	// Create a client
 	// TODO: use trust config
-	client := object.NewClient(app, storage.NewMemoryStore(), nil)
+	cliStore := storage.NewMemoryStore()
+	kc, err := keychain.NewKeyChain(config.Repo.KeyChainUri, cliStore)
+	if err != nil {
+		fmt.Println("keychain creation failed:", err)
+		return
+	}
+
+	// TODO: enforce trust schema defined by repo provider
+	schema := trust_schema.NewNullSchema()
+
+	// TODO: handle app-specific case
+	anchors := config.Repo.TrustAnchorNames()
+
+	// Create trust config
+	trust, err := sec.NewTrustConfig(kc, schema, anchors)
+	if err != nil {
+		fmt.Println("trust config creation failed:", err)
+		return
+	}
+	trust.UseDataNameFwHint = true
+
+	client := object.NewClient(app, storage.NewMemoryStore(), trust)
 	if err := client.Start(); err != nil {
 		fmt.Println("client start failed:", err)
 		return
@@ -111,13 +248,13 @@ func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
 	defer client.Stop()
 
 	// Read file content and chunk if necessary
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(t.file_path)
 	if err != nil {
 		fmt.Println("failed to read file:", err)
 		return
 	}
 	vname, err := client.Produce(ndn.ProduceArgs{
-		Name:    t.file_name.WithVersion(enc.VersionUnixMicro),
+		Name:    config.Repo.NameN.Append(t.file_name...).WithVersion(enc.VersionUnixMicro),
 		Content: enc.Wire{content},
 	})
 	if err != nil {
@@ -126,52 +263,19 @@ func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
 	}
 	// calculate end_block_id based on content size (Produce will chunk the content into segments of size 8000)
 	lastSeg := uint64(0)
-	if len(content) > 0 {
-		lastSeg = uint64((len(content) - 1) / 8000)
-	}
+	lastSeg = uint64((len(content) - 1) / 8000)
 	t.end_block_id = lastSeg
 
 	fmt.Printf("Produced Data with name: %s, segments: 0-%d\n", vname.String(), lastSeg)
-
 	// Announce prefix before BlobFetch so server can fetch segments.
 	client.AnnouncePrefix(ndn.Announcement{
-		Name:   vname,
+		Name:   config.Repo.NameN,
 		Expose: true,
 	})
-	defer client.WithdrawPrefix(vname, nil) // Withdraw prefix after command is done or timeout, so server won't fetch other data with the same prefix.
-
-	announceStop := make(chan struct{}) // notify background goroutine to stop announcing when BlobFetch is done or timeout.
-	announceDone := make(chan struct{}) // Stop announcement when BlobFetch is done or timeout.
-	var stopOnce sync.Once
-	stopAnnounce := func() {
-		stopOnce.Do(func() {
-			close(announceStop)
-			<-announceDone // block until goroutine stop announceDone
-		})
-	}
-	defer stopAnnounce()
-
-	// Keep announcement alive in background while server is fetching.
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		defer close(announceDone)
-		for {
-			select {
-			case <-announceStop:
-				return
-			case <-ticker.C:
-				client.AnnouncePrefix(ndn.Announcement{
-					Name:   vname,
-					Expose: true,
-				})
-			}
-		}
-	}()
 
 	// Create command name
-	cmdName := t.file_name.
-		Append(enc.NewKeywordComponent("insert")).
+	cmdName, err := enc.NameFromStr(config.Repo.Name)
+	cmdName = cmdName.Append(enc.NewKeywordComponent("insert")).
 		WithVersion(enc.VersionUnixMicro)
 
 	// Create BlobFetch command payload
@@ -219,8 +323,14 @@ func (t *RepoCommandParam) run(_ *cobra.Command, args []string) {
 	case jobName := <-jobCh:
 		fmt.Printf("insert job started with job name: %s\n", jobName)
 		fmt.Println("insert command success")
-	case <-time.After(t.timeout):
-		fmt.Printf("insert command timeout after %s\n", t.timeout)
+		// polling job status until it's done or timeout
+		if err := waitJobDone(client, jobName, t.forwarding_hint); err != nil {
+			fmt.Println("wait job failed:", err)
+			return
+		}
+		fmt.Println("Insert success")
+	case <-time.After(30 * time.Second):
+		fmt.Printf("insert command timeout after %s\n", 30*time.Second)
 	}
-	// TODO: Add the pooling logic to check job status using jobName, and print the final result when job is done.
+
 }
