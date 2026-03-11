@@ -19,7 +19,8 @@ type Config struct {
 	TrustAnchors []string `json:"trust_anchors"`
 	// IgnoreValidity skips validity period checks when fetching remote data (e.g. SVS snapshots).
 	IgnoreValidity bool `json:"ignore_validity"`
-
+	// Optional: add if u want to use insertion command
+	CatalogPath string `json:"catalog_path"`
 	// NameN is the parsed name of the repo service.
 	NameN enc.Name
 }
@@ -43,6 +44,20 @@ func (c *Config) Parse() (err error) {
 		}
 		c.StorageDir = path
 	}
+
+	if c.CatalogPath == "" {
+		return fmt.Errorf("catalog path must be set")
+	} else {
+		path, err := filepath.Abs(c.CatalogPath)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute path: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return fmt.Errorf("failed to create storage directory: %w", err)
+		}
+		c.CatalogPath = path
+	}
+
 	return nil
 }
 

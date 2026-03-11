@@ -119,5 +119,14 @@ func cmdRepo() *cobra.Command {
 	repo.CmdRepo.Short = "Start the NDN Data Repository Daemon"
 	cmdRepo.AddCommand(repo.CmdRepo)
 
+	cmdRepo.AddGroup(&cobra.Group{ID: "control", Title: "NDN Data Repository Control"})
+	insert := repo.CmdRepoInsert()
+	insert.GroupID = "control"
+	cmdRepo.AddCommand(insert)
+
+	delete := repo.CmdRepoDelete()
+	delete.GroupID = "control"
+	cmdRepo.AddCommand(delete)
+
 	return cmdRepo
 }

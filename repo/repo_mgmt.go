@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,134 +49,154 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 	_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "unknown management command"}).Encode())
 }
 
+func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch) { // background goroutine to process the command and update status
+	//  build file for received file
+	// defer close(doneCh)
+	file, err := os.Create(r.config.StorageDir + "/" + cmd.Name.Name.At(-2).String())
+	if err != nil {
+		resultCh <- []byte("failed: " + err.Error())
+		println("failed: " + err.Error())
+		return
+	}
+	defer file.Close()
+	// find the user to ask for file
+	forwardingHint, _ := findFileOwner(r.config.CatalogPath, cmd.Name.Name.At(-2).String())
+	interestName, _ := enc.NameFromStr(forwardingHint)
+	interestName = interestName.Append(cmd.Name.Name...)
+
+	//interest
+	println("Starting fetch for:", cmd.Name.Name.String())
+	if cmd.Name != nil && len(cmd.Name.Name) > 0 {
+		done := make(chan error, 1)
+		println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
+		r.client.ConsumeExt(ndn.ConsumeExtArgs{
+			Name:           interestName,
+			TryStore:       true,
+			IgnoreValidity: optional.Some(r.config.IgnoreValidity),
+			Callback: func(state ndn.ConsumeState) {
+				println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
+				if state.Error() != nil { // fetch failed
+					println("DEBUG: Error in fetch:", state.Error().Error())
+					select {
+					case done <- state.Error():
+					default:
+					}
+					return
+				}
+				for _, chunk := range state.Content() {
+					println("DEBUG: Received chunk of size:", len(chunk))
+					file.Write(chunk)
+				}
+				if state.IsComplete() { // fetch succeeded
+					println("DEBUG: Fetch complete")
+					select {
+					case done <- nil:
+					default:
+					}
+				}
+			},
+		})
+		println("DEBUG: ConsumeExt returned, waiting for done channel...")
+
+		select {
+		case err := <-done: // fetch completed or failedq
+			if err != nil {
+				resultCh <- []byte("failed:" + err.Error())
+				println("DEBUG: Fetch failed with error:", err.Error())
+			}
+		case <-time.After(8 * time.Second):
+			resultCh <- []byte("failed: fetch timeout")
+			println("DEBUG: select timeout")
+		}
+		updateFileOwner(r.config.CatalogPath, cmd.Name.Name.At(-2).String(), r.config.Name)
+		resultCh <- []byte("done")
+		println("DEBUG: reply completed")
+		return
+	}
+}
+func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch) {
+	// defer close(doneCh)
+	fileName := strings.TrimPrefix(cmd.Name.Name.String(), "/")
+	filePath := filepath.Join(r.config.StorageDir, fileName)
+
+	// find status of this file
+	if _, err := os.Stat(filePath); err != nil {
+		// if file doesn't exit
+		if os.IsNotExist(err) {
+			resultCh <- []byte("failed: file not found")
+		} else {
+			resultCh <- []byte("failed: " + err.Error())
+		}
+		return
+	}
+
+	if err := os.Remove(filePath); err != nil {
+		resultCh <- []byte("failed: " + err.Error())
+		return
+	}
+
+	deleteFileFromCatalog(r.config.CatalogPath, fileName)
+	resultCh <- []byte("done")
+	println("delete file success")
+}
+
 // handleBlobFetch handles one-shot blob insertion/deletion commands sent to repo management endpoint.
 func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
-	// first ack to client with job ID
-	// TODO: change /ndnd/server to autogenerate
-
-	// base := r.config.NameN.Append(enc.NewGenericComponent("status"))
-	jobNamePrefix := r.config.NameN.Append(
+	// first ack to client with job ID for status check
+	jobNamePrefix := enc.Name{}.Append(
 		enc.NewGenericComponent("status"),
-		enc.NewGenericComponent("insert"),
 		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
 	)
-	progressName := jobNamePrefix.Append(enc.NewGenericComponent("heartbeat"))
-	resultName := jobNamePrefix.Append(enc.NewGenericComponent("result"))
 	jobNameStr := jobNamePrefix.String()
 
 	reply((&tlv.RepoCmdRes{Status: 200, Message: jobNameStr}).Encode()) // reply that job is accepted with job name for client to check status
-	jobNamePrefix, err := enc.NameFromStr(jobNameStr)
-	if err != nil {
-		log.Error(r, "Failed to create job name", "err", err)
-		return
-	}
+	jobNamePrefix = r.config.NameN.Append(jobNamePrefix...)
 	println("BlobFetch Name:", cmd.Name.Name.String())
 
-	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) { // received insert command
+	// heartbeat before it is done
+	// doneCh := make(chan struct{})
+	resultCh := make(chan []byte, 1)
 
-		doneCh := make(chan struct{})
-		defer close(doneCh)
+	go func() { // background goroutine to publish heartbeat until job is done
 
-		publishProgress := func(heartbeat int) {
-			_, err := r.client.Produce(ndn.ProduceArgs{
-				Name:            progressName.WithVersion(enc.VersionUnixMicro),
-				Content:         enc.Wire{[]byte(fmt.Sprintf("%d", heartbeat))},
-				FreshnessPeriod: 2 * time.Second,
-			})
-			if err != nil {
-				println("DEBUG: failed to produce progress:", err.Error())
-			}
-		}
+		ticker := time.NewTicker(2 * time.Second)
+		heartbeat := 0
+		defer ticker.Stop()
 
-		go func() {
-			ticker := time.NewTicker(2 * time.Second)
-			heartbeat := 0
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-doneCh:
-					return
-				case <-ticker.C:
-					publishProgress(heartbeat)
-					heartbeat++
-				}
-			}
-		}()
-
-		go func() { // background goroutine to process the command and update status
-			//  build file for received file
-			var payload []byte = []byte("done")
-			file, err := os.Create("/tmp/" + cmd.Name.Name.At(-2).String() + ".bin")
-			if err != nil {
-				println("Failed to create file:", err)
-				return
-			}
-			defer file.Close()
-
-			println("Starting fetch for:", cmd.Name.Name.String())
-			if cmd.Name != nil && len(cmd.Name.Name) > 0 {
-				done := make(chan error, 1)
-				println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
-				r.client.ConsumeExt(ndn.ConsumeExtArgs{
-					Name:           cmd.Name.Name,
-					TryStore:       true,
-					IgnoreValidity: optional.Some(r.config.IgnoreValidity),
-					Callback: func(state ndn.ConsumeState) {
-						println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
-						if state.Error() != nil { // fetch failed
-							println("DEBUG: Error in fetch:", state.Error().Error())
-							select {
-							case done <- state.Error():
-							default:
-							}
-							return
-						}
-						for _, chunk := range state.Content() {
-							println("DEBUG: Received chunk of size:", len(chunk))
-							file.Write(chunk)
-						}
-						if state.IsComplete() { // fetch succeeded
-							println("DEBUG: Fetch complete")
-							select {
-							case done <- nil:
-							default:
-							}
-						}
-					},
-				})
-				println("DEBUG: ConsumeExt returned, waiting for done channel...")
-
-				select {
-				case err := <-done: // fetch completed or failedq
-					if err != nil {
-						payload = []byte("failed:" + err.Error())
-						println("DEBUG: Fetch failed with error:", err.Error())
-					}
-				case <-time.After(8 * time.Second):
-					payload = []byte("failed: fetch timeout")
-					println("DEBUG: select timeout")
-				}
-				_, err = r.client.Produce(ndn.ProduceArgs{
-					Name:            resultName.WithVersion(enc.VersionUnixMicro),
+		for {
+			select {
+			// once u get the final result
+			case payload := <-resultCh:
+				_, err := r.client.Produce(ndn.ProduceArgs{
+					Name:            jobNamePrefix.WithVersion(enc.VersionUnixMicro),
 					Content:         enc.Wire{payload},
 					FreshnessPeriod: 60 * time.Second,
 				})
 				if err != nil {
 					log.Error(r, "Failed to produce job result", "err", err)
 				}
-
-				println("DEBUG: reply completed")
 				return
+			// heartbeat to make sure server is alive
+			case <-ticker.C:
+				_, err := r.client.Produce(ndn.ProduceArgs{
+					Name:            jobNamePrefix.WithVersion(enc.VersionUnixMicro),
+					Content:         enc.Wire{[]byte(fmt.Sprintf("processing: %d", heartbeat))},
+					FreshnessPeriod: 2 * time.Second,
+				})
+				if err != nil {
+					log.Error(r, "Failed to produce progress update", "err", err)
+				}
+				heartbeat++
 			}
-		}()
+		}
+	}()
+
+	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("delete")) {
+		go r.handleDeletion(resultCh, cmd)
+	} else if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) { // received insert command
+		go r.handleInsertion(resultCh, cmd)
 	} else {
-		payload := []byte("failed: invalid command parameters")
-		_, _ = r.client.Produce(ndn.ProduceArgs{
-			Name:            jobNamePrefix.WithVersion(enc.VersionUnixMicro),
-			Content:         enc.Wire{payload},
-			FreshnessPeriod: 60 * time.Second,
-		})
+		resultCh <- []byte("failed: invalid command parameters")
 		return
 	}
 }
