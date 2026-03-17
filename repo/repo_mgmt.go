@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,6 +115,7 @@ func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch) { // 
 		return
 	}
 }
+
 func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch) {
 	// defer close(doneCh)
 	fileName := strings.TrimPrefix(cmd.Name.Name.String(), "/")
@@ -143,62 +145,81 @@ func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch) {
 // handleBlobFetch handles one-shot blob insertion/deletion commands sent to repo management endpoint.
 func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
 	// first ack to client with job ID for status check
-	jobNamePrefix := enc.Name{}.Append(
+	jobNamePrefix := r.config.NameN.Append(
 		enc.NewGenericComponent("status"),
 		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
 	)
-	jobNameStr := jobNamePrefix.String()
-
-	reply((&tlv.RepoCmdRes{Status: 200, Message: jobNameStr}).Encode()) // reply that job is accepted with job name for client to check status
-	jobNamePrefix = r.config.NameN.Append(jobNamePrefix...)
+	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
+	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode()) // reply that job is accepted with job name for client to check status
 	println("BlobFetch Name:", cmd.Name.Name.String())
-
-	// heartbeat before it is done
-	// doneCh := make(chan struct{})
 	resultCh := make(chan []byte, 1)
-
-	go func() { // background goroutine to publish heartbeat until job is done
-
-		ticker := time.NewTicker(2 * time.Second)
-		heartbeat := 0
-		defer ticker.Stop()
-
-		for {
-			select {
-			// once u get the final result
-			case payload := <-resultCh:
-				_, err := r.client.Produce(ndn.ProduceArgs{
-					Name:            jobNamePrefix.WithVersion(enc.VersionUnixMicro),
-					Content:         enc.Wire{payload},
-					FreshnessPeriod: 60 * time.Second,
-				})
-				if err != nil {
-					log.Error(r, "Failed to produce job result", "err", err)
-				}
-				return
-			// heartbeat to make sure server is alive
-			case <-ticker.C:
-				_, err := r.client.Produce(ndn.ProduceArgs{
-					Name:            jobNamePrefix.WithVersion(enc.VersionUnixMicro),
-					Content:         enc.Wire{[]byte(fmt.Sprintf("processing: %d", heartbeat))},
-					FreshnessPeriod: 2 * time.Second,
-				})
-				if err != nil {
-					log.Error(r, "Failed to produce progress update", "err", err)
-				}
-				heartbeat++
-			}
-		}
-	}()
-
+	timeout := 5 * time.Second
 	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("delete")) {
+		timeout = 1 * time.Second
 		go r.handleDeletion(resultCh, cmd)
-	} else if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) { // received insert command
+	} else if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) {
+		timeout = 5 * time.Second
 		go r.handleInsertion(resultCh, cmd)
 	} else {
 		resultCh <- []byte("failed: invalid command parameters")
 		return
 	}
+
+	publishStatus := func(name enc.Name, payload []byte, period time.Duration) {
+		_, err := r.client.Produce(ndn.ProduceArgs{
+			Name:            name,
+			Content:         enc.Wire{payload},
+			FreshnessPeriod: period,
+		})
+		if err != nil {
+			log.Error(r, "Failed to produce progress update", "err", err)
+		}
+	}
+
+	go func() { // background goroutine to publish heartbeat until job is done
+
+		ticker := time.NewTicker(timeout)
+		defer ticker.Stop()
+		nextName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
+
+		payload := JobStatusPayload{
+			Status:           "processing",
+			NextInterestName: nextName.String(),
+			RetryAfter:       timeout.String(),
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		publishStatus(currentName, payloadBytes, timeout)
+
+		currentName = nextName
+		for {
+			select {
+			// once u get the final result
+			case result := <-resultCh:
+				s := strings.TrimSpace(string(result))
+				payload := JobStatusPayload{}
+				switch {
+				case strings.HasPrefix(s, "failed:"):
+					payload.Status = "failed"
+					payload.Message = strings.TrimSpace(strings.TrimPrefix(s, "failed:"))
+				case s == "done":
+					payload.Status = "done"
+				default:
+					payload.Status = "failed"
+					payload.Message = "unexpected job result: " + s
+				}
+				payloadBytes, _ := json.Marshal(payload)
+				publishStatus(currentName, payloadBytes, 60*time.Second)
+				return
+			// ask client to check status after %d seconds
+			case <-ticker.C:
+				nextName = jobNamePrefix.WithVersion(enc.VersionUnixMicro)
+				payload.NextInterestName = nextName.String()
+				payloadBytes, _ := json.Marshal(payload)
+				publishStatus(currentName, payloadBytes, timeout)
+				currentName = nextName
+			}
+		}
+	}()
 }
 
 // (AI GENERATED DESCRIPTION): Handles a `SyncJoin` command by starting an SVS session when the protocol is `SyncProtocolSvsV3`, or returning an error status if the protocol is unknown or the session fails to start.

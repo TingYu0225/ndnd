@@ -149,7 +149,7 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 		fmt.Printf("delete job started with job name: %s\n", jobName)
 		fmt.Println("delete command success")
 		// polling job status until it's done or timeout
-		if err := waitJobDone(client, jobName, t.forwardingHint); err != nil {
+		if err := waitJobDone(client, jobName); err != nil {
 			fmt.Println("wait job failed:", err)
 			return
 		}

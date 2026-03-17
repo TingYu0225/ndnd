@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,13 @@ type RepoCommandParam struct {
 	startBlockID   uint64   // Start block ID for segmented data(interest)
 	endBlockID     uint64   // End block ID for segmented data(interest)
 	forwardingHint enc.Name // target server's ndn prefix, e.g. /ndnd/server
+}
+
+type JobStatusPayload struct {
+	Status           string `json:"status"` // processing | done | failed
+	NextInterestName string `json:"next_interest_name"`
+	RetryAfter       string `json:"retry_after"`
+	Message          string `json:"message,omitempty"`
 }
 
 func CmdRepoInsert() *cobra.Command {
@@ -97,23 +105,17 @@ func checkInsertRequest(t *RepoCommandParam, args []string, cmd *cobra.Command) 
 	return true
 
 }
-func waitJobDone(client ndn.Client, jobName string, serverPrefix enc.Name) error {
+func waitJobDone(client ndn.Client, jobName string) error {
 	fmt.Println("Start waiting for job done with job name:", jobName)
 
-	jobBase, err := enc.NameFromStr(jobName)
+	jobInterest, err := enc.NameFromStr(jobName)
 	if err != nil {
 		return fmt.Errorf("invalid job name: %w", err)
 	}
+	lastVer := uint64(0)
 
-	jobPrefix := serverPrefix.Append(jobBase...)
-
-	ticker := time.NewTicker(2 * time.Second)
-	idleTimeout := 10 * time.Second
-	idleTimer := time.NewTimer(idleTimeout)
-	defer ticker.Stop()
-	defer idleTimer.Stop()
-
-	lastHeartbeat := ""
+	checkTimer := time.NewTimer(0 * time.Second)
+	defer checkTimer.Stop()
 
 	fetchText := func(name enc.Name) (string, error) {
 		resultCh := make(chan string, 1)
@@ -126,7 +128,7 @@ func waitJobDone(client ndn.Client, jobName string, serverPrefix enc.Name) error
 				MustBeFresh: true,
 				Lifetime:    optional.Some(2 * time.Second),
 			},
-			Retries: 0,
+			Retries: 2,
 			Callback: func(args ndn.ExpressCallbackArgs) {
 				if args.Result != ndn.InterestResultData {
 					errCh <- fmt.Errorf("%s", args.Result)
@@ -141,53 +143,53 @@ func waitJobDone(client ndn.Client, jobName string, serverPrefix enc.Name) error
 			return s, nil
 		case err := <-errCh:
 			return "", err
-		case <-time.After(3 * time.Second):
-			return "", fmt.Errorf("local wait timeout")
 		}
 	}
 
-	for {
-		select {
-		case <-idleTimer.C:
+	for range checkTimer.C {
+		fmt.Println("Checking job status...", jobInterest.String())
+
+		status, err := fetchText(jobInterest)
+		if err != nil {
+			fmt.Printf("status check failed: %v\n", err)
 			return fmt.Errorf("wait job timeout: %s", jobName)
+		}
+		var st JobStatusPayload
+		if err := json.Unmarshal([]byte(status), &st); err != nil {
+			return fmt.Errorf("invalid status payload: %w raw=%q", err, status)
+		}
 
-		case <-ticker.C:
-			fmt.Println("Checking job status...", jobPrefix.String())
+		switch st.Status {
+		case "done":
+			fmt.Println("job done")
+			return nil
 
-			status, err := fetchText(jobPrefix)
+		case "failed":
+			return fmt.Errorf("job failed: %s", st.Message)
+
+		case "processing":
+			println("job processing, will check again after", st.RetryAfter)
+			println("next interest name for status check:", st.NextInterestName)
+			checkTimeout, err := time.ParseDuration(st.RetryAfter)
 			if err != nil {
-				fmt.Printf("status check failed: %v\n", err)
-				continue
+				return fmt.Errorf("failed to parse processing time: %v\n", err)
 			}
-
-			switch {
-			case status == "done":
-				fmt.Println("job done")
-				return nil
-
-			case strings.HasPrefix(status, "failed:"):
-				return fmt.Errorf("job failed: %s", strings.TrimPrefix(status, "failed:"))
-
-			case strings.HasPrefix(status, "processing:"):
-				hb := strings.TrimPrefix(status, "processing:")
-				fmt.Printf("heartbeat: %s\n", hb)
-
-				if hb != "" && hb != lastHeartbeat {
-					lastHeartbeat = hb
-					if !idleTimer.Stop() {
-						select {
-						case <-idleTimer.C:
-						default:
-						}
-					}
-					idleTimer.Reset(idleTimeout)
-				}
-
-			default:
-				fmt.Printf("unexpected job status: %s\n", status)
+			nextName, err := enc.NameFromStr(strings.TrimSpace(st.NextInterestName))
+			if err != nil {
+				return fmt.Errorf("invalid next_interest_name %q: %w", st.NextInterestName, err)
 			}
+			ver := nextName.At(-1).NumberVal()
+			if ver <= lastVer {
+				return fmt.Errorf("next interest version not increasing: %d <= %d", ver, lastVer)
+			}
+			jobInterest = nextName
+			checkTimer.Reset(checkTimeout)
+
+		default:
+			return fmt.Errorf("unexpected status: %s", st.Status)
 		}
 	}
+	return fmt.Errorf("status loop ended unexpectedly")
 }
 
 // func insert(name enc.Name, startBlockID uint64, endBlockID uint64, client ndn.Client) error {
@@ -334,7 +336,7 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 		fmt.Printf("insert job started with job name: %s\n", jobName)
 		fmt.Println("insert command success")
 		// polling job status until it's done or timeout
-		if err := waitJobDone(client, jobName, t.forwardingHint); err != nil {
+		if err := waitJobDone(client, jobName); err != nil {
 			fmt.Println("wait job failed:", err)
 			return
 		}
