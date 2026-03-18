@@ -1,12 +1,18 @@
 package repo
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	enc "github.com/named-data/ndnd/std/encoding"
 )
+
+// Default binary LVS schema bundled with the repo.
+//
+//go:embed config/schema.tlv
+var defaultSchemaBytes []byte
 
 type Config struct {
 	// Name is the name of the repo service.
@@ -72,6 +78,11 @@ func (c *Config) TrustAnchorNames() []enc.Name {
 		}
 	}
 	return res
+}
+
+// SchemaBytes returns the loaded binary LVS schema.
+func (c *Config) SchemaBytes() []byte {
+	return defaultSchemaBytes
 }
 
 // (AI GENERATED DESCRIPTION): Returns a new Config with default placeholder values: empty Name and StorageDir strings, and a nil NameN slice.

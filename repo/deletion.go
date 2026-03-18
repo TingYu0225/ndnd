@@ -11,9 +11,7 @@ import (
 	spec "github.com/named-data/ndnd/std/ndn/spec_2022"
 	"github.com/named-data/ndnd/std/object"
 	"github.com/named-data/ndnd/std/object/storage"
-	sec "github.com/named-data/ndnd/std/security"
 	"github.com/named-data/ndnd/std/security/keychain"
-	"github.com/named-data/ndnd/std/security/trust_schema"
 	"github.com/named-data/ndnd/std/utils/toolutils"
 	"github.com/spf13/cobra"
 )
@@ -78,21 +76,14 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 		return
 	}
 
-	// TODO: enforce trust schema defined by repo provider
-	schema := trust_schema.NewPrefixSchema()
-
-	anchors := config.Repo.TrustAnchorNames()
-
-	// Create trust config
-	trust, err := sec.NewTrustConfig(kc, schema, anchors)
+	// Create trust config from the configured LVS schema.
+	trust, err := newLvsTrustConfig(kc, config.Repo)
 	if err != nil {
 		fmt.Println("trust config creation failed:", err)
 		return
 	}
-	trust.UseDataNameFwHint = true
 
-	// client := object.NewClient(app, storage.NewMemoryStore(), trust)
-	client := object.NewClient(app, storage.NewMemoryStore(), nil)
+	client := object.NewClient(app, storage.NewMemoryStore(), trust)
 	if err := client.Start(); err != nil {
 		fmt.Println("client start failed:", err)
 		return
@@ -117,7 +108,9 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	// Send command to repo
 	jobCh := make(chan string, 1)
 	done := make(chan error, 1)
-	client.ExpressCommand(t.forwardingHint, config.Repo.NameN.WithVersion(enc.VersionUnixMicro), payload, func(w enc.Wire, err error) {
+	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("delete")).
+		WithVersion(enc.VersionUnixMicro)
+	client.ExpressCommand(t.forwardingHint, cmdName, payload, func(w enc.Wire, err error) {
 		if err != nil {
 			done <- err
 			return

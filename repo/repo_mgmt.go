@@ -150,8 +150,8 @@ func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
 		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
 	)
 	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
-	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode()) // reply that job is accepted with job name for client to check status
-	println("BlobFetch Name:", cmd.Name.Name.String())
+	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
+
 	resultCh := make(chan []byte, 1)
 	timeout := 5 * time.Second
 	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("delete")) {

@@ -16,9 +16,7 @@ import (
 	spec "github.com/named-data/ndnd/std/ndn/spec_2022"
 	"github.com/named-data/ndnd/std/object"
 	"github.com/named-data/ndnd/std/object/storage"
-	sec "github.com/named-data/ndnd/std/security"
 	"github.com/named-data/ndnd/std/security/keychain"
-	"github.com/named-data/ndnd/std/security/trust_schema"
 	"github.com/named-data/ndnd/std/types/optional"
 	"github.com/named-data/ndnd/std/utils/toolutils"
 	"github.com/spf13/cobra"
@@ -236,16 +234,13 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 		return
 	}
 	fmt.Println(kc)
-	schema := trust_schema.NewPrefixSchema()
-	anchors := config.Repo.TrustAnchorNames()
 
-	// Create trust config
-	trust, err := sec.NewTrustConfig(kc, schema, anchors)
+	// Create trust config from the configured LVS schema.
+	trust, err := newLvsTrustConfig(kc, config.Repo)
 	if err != nil {
 		fmt.Println("trust config creation failed:", err)
 		return
 	}
-	trust.UseDataNameFwHint = true
 
 	client := object.NewClient(app, cliStore, trust)
 	// client := object.NewClient(app, storage.NewMemoryStore(), nil)
@@ -285,8 +280,7 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	})
 
 	// Create command name
-	cmdName, err := enc.NameFromStr(config.Repo.Name)
-	cmdName = cmdName.Append(enc.NewKeywordComponent("insert")).
+	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("insert")).
 		WithVersion(enc.VersionUnixMicro)
 
 	// Create BlobFetch command payload

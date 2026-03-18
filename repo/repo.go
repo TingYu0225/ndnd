@@ -12,7 +12,6 @@ import (
 	"github.com/named-data/ndnd/std/object/storage"
 	sec "github.com/named-data/ndnd/std/security"
 	"github.com/named-data/ndnd/std/security/keychain"
-	"github.com/named-data/ndnd/std/security/trust_schema"
 )
 
 type Repo struct {
@@ -66,22 +65,12 @@ func (r *Repo) Start() (err error) {
 	}
 	r.keychain = kc
 
-	// TODO: enforce trust schema defined by repo provider
-	schema := trust_schema.NewPrefixSchema()
-
-	// TODO: handle app-specific case
-	anchors := r.config.TrustAnchorNames()
-
-	// Create trust config
-	trust, err := sec.NewTrustConfig(kc, schema, anchors)
+	// Create trust config from the configured LVS schema.
+	trust, err := newLvsTrustConfig(kc, r.config)
 	if err != nil {
 		return err
 	}
 	r.trust = trust
-
-	// Attach data name as forwarding hint to cert Interests
-	// TODO: what to do if this is app dependent? Separate client for each app?
-	trust.UseDataNameFwHint = true
 
 	// Start NDN Object API client
 	r.client = object.NewClient(r.engine, r.store, trust)
