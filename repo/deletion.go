@@ -8,6 +8,7 @@ import (
 	enc "github.com/named-data/ndnd/std/encoding"
 	"github.com/named-data/ndnd/std/engine"
 	"github.com/named-data/ndnd/std/log"
+	"github.com/named-data/ndnd/std/ndn"
 	spec "github.com/named-data/ndnd/std/ndn/spec_2022"
 	"github.com/named-data/ndnd/std/object"
 	"github.com/named-data/ndnd/std/object/storage"
@@ -53,6 +54,7 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 		log.Fatal(nil, "Configuration error", "err", err)
 	}
 	// Find the owner of target file
+	// TODO check if this is good to go?
 	target, err := findFileOwner(config.Repo.CatalogPath, t.fileName)
 	if err != nil {
 		fmt.Println("catalog lookup failed:", err)
@@ -60,7 +62,8 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	}
 	t.forwardingHint, _ = enc.NameFromStr(target)
 
-	// Create a basic engine with a default face
+	// Create a basic engine with a default client
+	println("Creating engine...")
 	app := engine.NewBasicEngine(engine.NewDefaultFace())
 	if err := app.Start(); err != nil {
 		fmt.Println("engine start failed:", err)
@@ -68,7 +71,6 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	}
 	defer app.Stop()
 
-	// TODO: Create a client use trust config
 	cliStore := storage.NewMemoryStore()
 	kc, err := keychain.NewKeyChain(config.Repo.KeyChainUri, cliStore)
 	if err != nil {
@@ -83,11 +85,15 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 		return
 	}
 
-	client := object.NewClient(app, storage.NewMemoryStore(), trust)
+	client := object.NewClient(app, cliStore, trust)
 	if err := client.Start(); err != nil {
 		fmt.Println("client start failed:", err)
 		return
 	}
+	client.AnnouncePrefix(ndn.Announcement{
+		Name:   config.Repo.NameN,
+		Expose: true,
+	})
 	defer client.Stop()
 
 	// cmdName, err := enc.NameFromStr(config.Repo.Name)
@@ -100,7 +106,10 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 			Name: &spec.NameContainer{
 				Name: name,
 			},
-			Data: [][]byte{[]byte("delete")},
+			Data: [][]byte{
+				[]byte("delete"),
+				config.Repo.NameN.Bytes(),
+			},
 		},
 	}).Encode()
 
@@ -108,6 +117,7 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	// Send command to repo
 	jobCh := make(chan string, 1)
 	done := make(chan error, 1)
+
 	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("delete")).
 		WithVersion(enc.VersionUnixMicro)
 	client.ExpressCommand(t.forwardingHint, cmdName, payload, func(w enc.Wire, err error) {

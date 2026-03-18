@@ -50,77 +50,93 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 	_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "unknown management command"}).Encode())
 }
 
-func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch) { // background goroutine to process the command and update status
+func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwardingHint enc.Name) { // background goroutine to process the command and update status
 	//  build file for received file
-	// defer close(doneCh)
-	file, err := os.Create(r.config.StorageDir + "/" + cmd.Name.Name.At(-2).String())
+	dirParts := []string{r.config.StorageDir}
+	for i := 0; i < len(forwardingHint); i++ {
+		dirParts = append(dirParts, forwardingHint.At(i).CanonicalString())
+	}
+	dirPath := filepath.Join(dirParts...)
+	println("DEBUG: Constructed directory path for insertion:", dirPath)
+	println(forwardingHint.String())
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		resultCh <- []byte("failed: " + err.Error())
+		return
+	}
+
+	fileName := cmd.Name.Name.At(-2).String()
+	filePath := filepath.Join(dirPath, fileName)
+
+	file, err := os.Create(filePath)
 	if err != nil {
 		resultCh <- []byte("failed: " + err.Error())
-		println("failed: " + err.Error())
 		return
 	}
 	defer file.Close()
-	// find the user to ask for file
-	forwardingHint, _ := findFileOwner(r.config.CatalogPath, cmd.Name.Name.At(-2).String())
-	interestName, _ := enc.NameFromStr(forwardingHint)
-	interestName = interestName.Append(cmd.Name.Name...)
+
+	interestName := forwardingHint.Append(cmd.Name.Name...)
 
 	//interest
-	println("Starting fetch for:", cmd.Name.Name.String())
-	if cmd.Name != nil && len(cmd.Name.Name) > 0 {
-		done := make(chan error, 1)
-		println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
-		r.client.ConsumeExt(ndn.ConsumeExtArgs{
-			Name:           interestName,
-			TryStore:       true,
-			IgnoreValidity: optional.Some(r.config.IgnoreValidity),
-			Callback: func(state ndn.ConsumeState) {
-				println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
-				if state.Error() != nil { // fetch failed
-					println("DEBUG: Error in fetch:", state.Error().Error())
-					select {
-					case done <- state.Error():
-					default:
-					}
-					return
-				}
-				for _, chunk := range state.Content() {
-					println("DEBUG: Received chunk of size:", len(chunk))
-					file.Write(chunk)
-				}
-				if state.IsComplete() { // fetch succeeded
-					println("DEBUG: Fetch complete")
-					select {
-					case done <- nil:
-					default:
-					}
-				}
-			},
-		})
-		println("DEBUG: ConsumeExt returned, waiting for done channel...")
+	println("Starting fetch for:", interestName.String())
 
-		select {
-		case err := <-done: // fetch completed or failedq
-			if err != nil {
-				resultCh <- []byte("failed:" + err.Error())
-				println("DEBUG: Fetch failed with error:", err.Error())
+	done := make(chan error, 1)
+	println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
+	r.client.ConsumeExt(ndn.ConsumeExtArgs{
+		Name:           interestName,
+		TryStore:       true,
+		IgnoreValidity: optional.Some(r.config.IgnoreValidity),
+		Callback: func(state ndn.ConsumeState) {
+			println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
+			if state.Error() != nil { // fetch failed
+				println("DEBUG: Error in fetch:", state.Error().Error())
+				select {
+				case done <- state.Error():
+				default:
+				}
+				return
 			}
-		case <-time.After(8 * time.Second):
-			resultCh <- []byte("failed: fetch timeout")
-			println("DEBUG: select timeout")
+			for _, chunk := range state.Content() {
+				println("DEBUG: Received chunk of size:", len(chunk))
+				file.Write(chunk)
+			}
+			if state.IsComplete() { // fetch succeeded
+				println("DEBUG: Fetch complete")
+				select {
+				case done <- nil:
+				default:
+				}
+			}
+		},
+	})
+	println("DEBUG: ConsumeExt returned, waiting for done channel...")
+
+	select {
+	case err := <-done: // fetch completed or failedq
+		if err != nil {
+			resultCh <- []byte("failed:" + err.Error())
+			println("DEBUG: Fetch failed with error:", err.Error())
 		}
-		updateFileOwner(r.config.CatalogPath, cmd.Name.Name.At(-2).String(), r.config.Name)
-		resultCh <- []byte("done")
-		println("DEBUG: reply completed")
-		return
+	case <-time.After(8 * time.Second):
+		resultCh <- []byte("failed: fetch timeout")
+		println("DEBUG: select timeout")
 	}
+	// TODO: modify catalog to include user
+	updateFileOwner(r.config.CatalogPath, cmd.Name.Name.At(-2).String(), r.config.Name) // add user name
+	resultCh <- []byte("done")
+	println("DEBUG: reply completed")
 }
 
-func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch) {
+func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwardingHint enc.Name) {
 	// defer close(doneCh)
-	fileName := strings.TrimPrefix(cmd.Name.Name.String(), "/")
-	filePath := filepath.Join(r.config.StorageDir, fileName)
+	dirParts := []string{r.config.StorageDir}
+	for i := 0; i < len(forwardingHint); i++ {
+		dirParts = append(dirParts, forwardingHint.At(i).CanonicalString())
+	}
+	dirPath := filepath.Join(dirParts...)
 
+	fileName := strings.TrimPrefix(cmd.Name.Name.String(), "/")
+	filePath := filepath.Join(dirPath, fileName)
+	// TODO: check if file is already here (catalog)
 	// find status of this file
 	if _, err := os.Stat(filePath); err != nil {
 		// if file doesn't exit
@@ -150,19 +166,33 @@ func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
 		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
 	)
 	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
+
+	if len(cmd.Data) != 2 {
+		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid BlobFetch command parameters"}).Encode())
+		return
+	}
+	action := cmd.Data[0]
+	forwardingHint, err := enc.NameFromBytes(cmd.Data[1])
+	println("DEBUG: Parsed action:", string(action), "forwarding hint:", forwardingHint.String())
+	if err != nil || !(bytes.Equal(action, []byte("delete")) || bytes.Equal(action, []byte("insert"))) {
+		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid action or forwarding hint"}).Encode())
+		return
+	}
+	if cmd.Name == nil || len(cmd.Name.Name) == 0 {
+		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid file name"}).Encode())
+		return
+	}
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
 
 	resultCh := make(chan []byte, 1)
 	timeout := 5 * time.Second
-	if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("delete")) {
+
+	if bytes.Equal(action, []byte("delete")) {
 		timeout = 1 * time.Second
-		go r.handleDeletion(resultCh, cmd)
-	} else if len(cmd.Data) > 0 && bytes.Equal(cmd.Data[0], []byte("insert")) {
+		go r.handleDeletion(resultCh, cmd, forwardingHint)
+	} else if bytes.Equal(action, []byte("insert")) {
 		timeout = 5 * time.Second
-		go r.handleInsertion(resultCh, cmd)
-	} else {
-		resultCh <- []byte("failed: invalid command parameters")
-		return
+		go r.handleInsertion(resultCh, cmd, forwardingHint)
 	}
 
 	publishStatus := func(name enc.Name, payload []byte, period time.Duration) {

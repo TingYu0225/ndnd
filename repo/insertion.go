@@ -211,13 +211,7 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	err := updateFileOwner(config.Repo.CatalogPath, strings.TrimPrefix(t.fileName.String(), "/"), config.Repo.Name)
-	if err != nil {
-		fmt.Println("catalog lookup failed:", err)
-		return
-	}
-
-	// Create a basic engine with a default face
+	// Create a basic engine with a default client
 	println("Creating engine...")
 	app := engine.NewBasicEngine(engine.NewDefaultFace())
 	if err := app.Start(); err != nil {
@@ -226,14 +220,12 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	}
 	defer app.Stop()
 
-	// TODO: Create a client use trust config
 	cliStore := storage.NewMemoryStore()
 	kc, err := keychain.NewKeyChain(config.Repo.KeyChainUri, cliStore)
 	if err != nil {
 		fmt.Println("keychain creation failed:", err)
 		return
 	}
-	fmt.Println(kc)
 
 	// Create trust config from the configured LVS schema.
 	trust, err := newLvsTrustConfig(kc, config.Repo)
@@ -243,11 +235,14 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	}
 
 	client := object.NewClient(app, cliStore, trust)
-	// client := object.NewClient(app, storage.NewMemoryStore(), nil)
 	if err := client.Start(); err != nil {
 		fmt.Println("client start failed:", err)
 		return
 	}
+	client.AnnouncePrefix(ndn.Announcement{
+		Name:   config.Repo.NameN,
+		Expose: true,
+	})
 	defer client.Stop()
 
 	// Read file content and chunk if necessary
@@ -274,10 +269,6 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	fmt.Printf("Produced Data with name: %s, segments: 0-%d\n", vname.String(), lastSeg)
 	fmt.Printf("Data name: %s", dataName.String())
 	// Announce prefix of client's name
-	client.AnnouncePrefix(ndn.Announcement{
-		Name:   config.Repo.NameN,
-		Expose: true,
-	})
 
 	// Create command name
 	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("insert")).
@@ -289,7 +280,10 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 			Name: &spec.NameContainer{
 				Name: dataName,
 			},
-			Data: [][]byte{[]byte("insert")},
+			Data: [][]byte{
+				[]byte("insert"),
+				config.Repo.NameN.Bytes(),
+			},
 		},
 	}).Encode()
 
