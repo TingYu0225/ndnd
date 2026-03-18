@@ -19,6 +19,10 @@ type RepoCmd struct {
 	SyncLeave *SyncLeave `tlv:"0x1DB1"`
 	//+field:struct:BlobFetch
 	BlobFetch *BlobFetch `tlv:"0x1DB2"`
+	//+field:struct:RepoCmdDelete
+	RepoCmdDelete *RepoCmdDelete `tlv:"0x1DB3"`
+	//+field:struct:RepoCmdInsert
+	RepoCmdInsert *RepoCmdInsert `tlv:"0x1DB4"`
 }
 
 type RepoCmdRes struct {
@@ -26,6 +30,19 @@ type RepoCmdRes struct {
 	Status uint64 `tlv:"0x291"`
 	//+field:string
 	Message string `tlv:"0x292"`
+}
+
+type RepoCmdInsert struct {
+	//+field:struct:spec.NameContainer
+	InterestName *spec.NameContainer `tlv:"0x1DB5"`
+	//+field:struct:spec.NameContainer
+	ForwardingHint *spec.NameContainer `tlv:"0x1DB6"`
+}
+type RepoCmdDelete struct {
+	//+field:string
+	FileName string `tlv:"0x1DB5"`
+	//+field:struct:spec.NameContainer
+	ForwardingHint *spec.NameContainer `tlv:"0x1DB6"`
 }
 
 type SyncJoin struct {
@@ -61,7 +78,7 @@ type BlobFetch struct {
 }
 
 type SecurityConfigObject struct {
-	//+field:sequence:[]byte:binary:[]byte
+	//+field:binary
 	Schema []byte `tlv:"0x1A5"`
 	//+field:sequence:[]byte:binary:[]byte
 	Anchors [][]byte `tlv:"0x1BA"`

@@ -1,7 +1,6 @@
 package repo
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,9 +39,12 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 		go r.handleSyncLeave(cmd.SyncLeave, reply)
 		return
 	}
-
-	if cmd.BlobFetch != nil {
-		r.handleBlobFetch(cmd.BlobFetch, reply)
+	if cmd.RepoCmdDelete != nil {
+		go r.handleDeletion(cmd.RepoCmdDelete, reply)
+		return
+	}
+	if cmd.RepoCmdInsert != nil {
+		go r.handleInsertion(cmd.RepoCmdInsert, reply)
 		return
 	}
 	// println("DEBUG: Received management command that is not SyncJoin, SyncLeave, or BlobFetch")
@@ -50,8 +52,27 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 	_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "unknown management command"}).Encode())
 }
 
-func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwardingHint enc.Name) { // background goroutine to process the command and update status
+func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) error) { // background goroutine to process the command and update status
+	jobNamePrefix := r.config.NameN.Append(
+		enc.NewGenericComponent("status"),
+		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
+	)
+	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
+
+	if cmd.ForwardingHint == nil || len(cmd.ForwardingHint.Name) == 0 || cmd.InterestName == nil || len(cmd.InterestName.Name) == 0 {
+		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid forwarding hint"}).Encode())
+		return
+	}
+	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
+
+	resultCh := make(chan []byte, 1)
+	// TODO: replace with better timeout calculation based on file size or other factors
+	timeout := 5 * time.Second
+	r.publishStatus(timeout, currentName, jobNamePrefix, resultCh)
+
 	//  build file for received file
+	forwardingHint := cmd.ForwardingHint.Name
+	fileName := cmd.InterestName.Name.At(-2).String()
 	dirParts := []string{r.config.StorageDir}
 	for i := 0; i < len(forwardingHint); i++ {
 		dirParts = append(dirParts, forwardingHint.At(i).CanonicalString())
@@ -64,7 +85,6 @@ func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwa
 		return
 	}
 
-	fileName := cmd.Name.Name.At(-2).String()
 	filePath := filepath.Join(dirPath, fileName)
 
 	file, err := os.Create(filePath)
@@ -74,13 +94,12 @@ func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwa
 	}
 	defer file.Close()
 
-	interestName := forwardingHint.Append(cmd.Name.Name...)
-
+	interestName := forwardingHint.Append(cmd.InterestName.Name...)
 	//interest
 	println("Starting fetch for:", interestName.String())
 
 	done := make(chan error, 1)
-	println("DEBUG: About to call ConsumeExt for name:", cmd.Name.Name.String())
+	println("DEBUG: About to call ConsumeExt for name:", interestName.String())
 	r.client.ConsumeExt(ndn.ConsumeExtArgs{
 		Name:           interestName,
 		TryStore:       true,
@@ -121,20 +140,34 @@ func (r *Repo) handleInsertion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwa
 		println("DEBUG: select timeout")
 	}
 	// TODO: modify catalog to include user
-	updateFileOwner(r.config.CatalogPath, cmd.Name.Name.At(-2).String(), r.config.Name) // add user name
+	updateFileOwner(r.config.CatalogPath, fileName, r.config.Name) // add user name
 	resultCh <- []byte("done")
 	println("DEBUG: reply completed")
 }
 
-func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwardingHint enc.Name) {
+func (r *Repo) handleDeletion(cmd *tlv.RepoCmdDelete, reply func(enc.Wire) error) {
+	jobNamePrefix := r.config.NameN.Append(
+		enc.NewGenericComponent("status"),
+		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
+	)
+	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
+	if cmd.ForwardingHint == nil || len(cmd.ForwardingHint.Name) == 0 || cmd.FileName == "" {
+		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid forwarding hint or file name"}).Encode())
+		return
+	}
+	forwardingHint := cmd.ForwardingHint.Name
+	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
+	resultCh := make(chan []byte, 1)
+	// TODO: replace with better timeout calculation based on file size or other factors
+	timeout := 1 * time.Second
+	r.publishStatus(timeout, currentName, jobNamePrefix, resultCh)
 	// defer close(doneCh)
 	dirParts := []string{r.config.StorageDir}
 	for i := 0; i < len(forwardingHint); i++ {
 		dirParts = append(dirParts, forwardingHint.At(i).CanonicalString())
 	}
 	dirPath := filepath.Join(dirParts...)
-
-	fileName := strings.TrimPrefix(cmd.Name.Name.String(), "/")
+	fileName := cmd.FileName
 	filePath := filepath.Join(dirPath, fileName)
 	// TODO: check if file is already here (catalog)
 	// find status of this file
@@ -158,43 +191,7 @@ func (r *Repo) handleDeletion(resultCh chan<- []byte, cmd *tlv.BlobFetch, forwar
 	println("delete file success")
 }
 
-// handleBlobFetch handles one-shot blob insertion/deletion commands sent to repo management endpoint.
-func (r *Repo) handleBlobFetch(cmd *tlv.BlobFetch, reply func(enc.Wire) error) {
-	// first ack to client with job ID for status check
-	jobNamePrefix := r.config.NameN.Append(
-		enc.NewGenericComponent("status"),
-		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
-	)
-	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
-
-	if len(cmd.Data) != 2 {
-		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid BlobFetch command parameters"}).Encode())
-		return
-	}
-	action := cmd.Data[0]
-	forwardingHint, err := enc.NameFromBytes(cmd.Data[1])
-	println("DEBUG: Parsed action:", string(action), "forwarding hint:", forwardingHint.String())
-	if err != nil || !(bytes.Equal(action, []byte("delete")) || bytes.Equal(action, []byte("insert"))) {
-		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid action or forwarding hint"}).Encode())
-		return
-	}
-	if cmd.Name == nil || len(cmd.Name.Name) == 0 {
-		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid file name"}).Encode())
-		return
-	}
-	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
-
-	resultCh := make(chan []byte, 1)
-	timeout := 5 * time.Second
-
-	if bytes.Equal(action, []byte("delete")) {
-		timeout = 1 * time.Second
-		go r.handleDeletion(resultCh, cmd, forwardingHint)
-	} else if bytes.Equal(action, []byte("insert")) {
-		timeout = 5 * time.Second
-		go r.handleInsertion(resultCh, cmd, forwardingHint)
-	}
-
+func (r *Repo) publishStatus(timeout time.Duration, currentName, jobNamePrefix enc.Name, resultCh <-chan []byte) {
 	publishStatus := func(name enc.Name, payload []byte, period time.Duration) {
 		_, err := r.client.Produce(ndn.ProduceArgs{
 			Name:            name,

@@ -54,6 +54,7 @@ func CmdRepoInsert() *cobra.Command {
 		Example: "ndnd repo insert /my/data/path/ /ndnd/server ./repo.sample.yml",
 		Run:     t.run,
 	}
+	// TODO: check if filename works well
 	cmd.Flags().String("filename", "", "filename")
 	return cmd
 }
@@ -274,16 +275,10 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("insert")).
 		WithVersion(enc.VersionUnixMicro)
 
-	// Create BlobFetch command payload
 	payload := (&tlv.RepoCmd{
-		BlobFetch: &tlv.BlobFetch{
-			Name: &spec.NameContainer{
-				Name: dataName,
-			},
-			Data: [][]byte{
-				[]byte("insert"),
-				config.Repo.NameN.Bytes(),
-			},
+		RepoCmdInsert: &tlv.RepoCmdInsert{
+			InterestName:   &spec.NameContainer{Name: dataName},
+			ForwardingHint: &spec.NameContainer{Name: config.Repo.NameN},
 		},
 	}).Encode()
 

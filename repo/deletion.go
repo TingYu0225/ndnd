@@ -99,21 +99,13 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	// cmdName, err := enc.NameFromStr(config.Repo.Name)
 	// cmdName = cmdName.Append(enc.NewKeywordComponent("insert")).
 	// 	WithVersion(enc.VersionUnixMicro)
-	name, err := enc.NameFromStr("/" + t.fileName)
-	// Create BlobFetch command payload
+
 	payload := (&tlv.RepoCmd{
-		BlobFetch: &tlv.BlobFetch{
-			Name: &spec.NameContainer{
-				Name: name,
-			},
-			Data: [][]byte{
-				[]byte("delete"),
-				config.Repo.NameN.Bytes(),
-			},
+		RepoCmdDelete: &tlv.RepoCmdDelete{
+			FileName:       t.fileName,
+			ForwardingHint: &spec.NameContainer{Name: config.Repo.NameN},
 		},
 	}).Encode()
-
-	println("send BlobFetch command")
 	// Send command to repo
 	jobCh := make(chan string, 1)
 	done := make(chan error, 1)

@@ -13,15 +13,19 @@ import (
 type RepoCmdEncoder struct {
 	Length uint
 
-	SyncJoin_encoder  SyncJoinEncoder
-	SyncLeave_encoder SyncLeaveEncoder
-	BlobFetch_encoder BlobFetchEncoder
+	SyncJoin_encoder      SyncJoinEncoder
+	SyncLeave_encoder     SyncLeaveEncoder
+	BlobFetch_encoder     BlobFetchEncoder
+	RepoCmdDelete_encoder RepoCmdDeleteEncoder
+	RepoCmdInsert_encoder RepoCmdInsertEncoder
 }
 
 type RepoCmdParsingContext struct {
-	SyncJoin_context  SyncJoinParsingContext
-	SyncLeave_context SyncLeaveParsingContext
-	BlobFetch_context BlobFetchParsingContext
+	SyncJoin_context      SyncJoinParsingContext
+	SyncLeave_context     SyncLeaveParsingContext
+	BlobFetch_context     BlobFetchParsingContext
+	RepoCmdDelete_context RepoCmdDeleteParsingContext
+	RepoCmdInsert_context RepoCmdInsertParsingContext
 }
 
 func (encoder *RepoCmdEncoder) Init(value *RepoCmd) {
@@ -33,6 +37,12 @@ func (encoder *RepoCmdEncoder) Init(value *RepoCmd) {
 	}
 	if value.BlobFetch != nil {
 		encoder.BlobFetch_encoder.Init(value.BlobFetch)
+	}
+	if value.RepoCmdDelete != nil {
+		encoder.RepoCmdDelete_encoder.Init(value.RepoCmdDelete)
+	}
+	if value.RepoCmdInsert != nil {
+		encoder.RepoCmdInsert_encoder.Init(value.RepoCmdInsert)
 	}
 
 	l := uint(0)
@@ -51,6 +61,16 @@ func (encoder *RepoCmdEncoder) Init(value *RepoCmd) {
 		l += uint(enc.TLNum(encoder.BlobFetch_encoder.Length).EncodingLength())
 		l += encoder.BlobFetch_encoder.Length
 	}
+	if value.RepoCmdDelete != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.RepoCmdDelete_encoder.Length).EncodingLength())
+		l += encoder.RepoCmdDelete_encoder.Length
+	}
+	if value.RepoCmdInsert != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.RepoCmdInsert_encoder.Length).EncodingLength())
+		l += encoder.RepoCmdInsert_encoder.Length
+	}
 	encoder.Length = l
 
 }
@@ -59,6 +79,8 @@ func (context *RepoCmdParsingContext) Init() {
 	context.SyncJoin_context.Init()
 	context.SyncLeave_context.Init()
 	context.BlobFetch_context.Init()
+	context.RepoCmdDelete_context.Init()
+	context.RepoCmdInsert_context.Init()
 }
 
 func (encoder *RepoCmdEncoder) EncodeInto(value *RepoCmd, buf []byte) {
@@ -95,6 +117,26 @@ func (encoder *RepoCmdEncoder) EncodeInto(value *RepoCmd, buf []byte) {
 			pos += encoder.BlobFetch_encoder.Length
 		}
 	}
+	if value.RepoCmdDelete != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7603))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.RepoCmdDelete_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.RepoCmdDelete_encoder.Length > 0 {
+			encoder.RepoCmdDelete_encoder.EncodeInto(value.RepoCmdDelete, buf[pos:])
+			pos += encoder.RepoCmdDelete_encoder.Length
+		}
+	}
+	if value.RepoCmdInsert != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7604))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.RepoCmdInsert_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.RepoCmdInsert_encoder.Length > 0 {
+			encoder.RepoCmdInsert_encoder.EncodeInto(value.RepoCmdInsert, buf[pos:])
+			pos += encoder.RepoCmdInsert_encoder.Length
+		}
+	}
 }
 
 func (encoder *RepoCmdEncoder) Encode(value *RepoCmd) enc.Wire {
@@ -112,6 +154,8 @@ func (context *RepoCmdParsingContext) Parse(reader enc.WireView, ignoreCritical 
 	var handled_SyncJoin bool = false
 	var handled_SyncLeave bool = false
 	var handled_BlobFetch bool = false
+	var handled_RepoCmdDelete bool = false
+	var handled_RepoCmdInsert bool = false
 
 	progress := -1
 	_ = progress
@@ -156,6 +200,18 @@ func (context *RepoCmdParsingContext) Parse(reader enc.WireView, ignoreCritical 
 					handled_BlobFetch = true
 					value.BlobFetch, err = context.BlobFetch_context.Parse(reader.Delegate(int(l)), ignoreCritical)
 				}
+			case 7603:
+				if true {
+					handled = true
+					handled_RepoCmdDelete = true
+					value.RepoCmdDelete, err = context.RepoCmdDelete_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			case 7604:
+				if true {
+					handled = true
+					handled_RepoCmdInsert = true
+					value.RepoCmdInsert, err = context.RepoCmdInsert_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
 			default:
 				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
 					return nil, enc.ErrUnrecognizedField{TypeNum: typ}
@@ -182,6 +238,12 @@ func (context *RepoCmdParsingContext) Parse(reader enc.WireView, ignoreCritical 
 	}
 	if !handled_BlobFetch && err == nil {
 		value.BlobFetch = nil
+	}
+	if !handled_RepoCmdDelete && err == nil {
+		value.RepoCmdDelete = nil
+	}
+	if !handled_RepoCmdInsert && err == nil {
+		value.RepoCmdInsert = nil
 	}
 
 	if err != nil {
@@ -363,6 +425,334 @@ func (value *RepoCmdRes) Bytes() []byte {
 
 func ParseRepoCmdRes(reader enc.WireView, ignoreCritical bool) (*RepoCmdRes, error) {
 	context := RepoCmdResParsingContext{}
+	context.Init()
+	return context.Parse(reader, ignoreCritical)
+}
+
+type RepoCmdInsertEncoder struct {
+	Length uint
+
+	InterestName_encoder   spec.NameContainerEncoder
+	ForwardingHint_encoder spec.NameContainerEncoder
+}
+
+type RepoCmdInsertParsingContext struct {
+	InterestName_context   spec.NameContainerParsingContext
+	ForwardingHint_context spec.NameContainerParsingContext
+}
+
+func (encoder *RepoCmdInsertEncoder) Init(value *RepoCmdInsert) {
+	if value.InterestName != nil {
+		encoder.InterestName_encoder.Init(value.InterestName)
+	}
+	if value.ForwardingHint != nil {
+		encoder.ForwardingHint_encoder.Init(value.ForwardingHint)
+	}
+
+	l := uint(0)
+	if value.InterestName != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.InterestName_encoder.Length).EncodingLength())
+		l += encoder.InterestName_encoder.Length
+	}
+	if value.ForwardingHint != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.ForwardingHint_encoder.Length).EncodingLength())
+		l += encoder.ForwardingHint_encoder.Length
+	}
+	encoder.Length = l
+
+}
+
+func (context *RepoCmdInsertParsingContext) Init() {
+	context.InterestName_context.Init()
+	context.ForwardingHint_context.Init()
+}
+
+func (encoder *RepoCmdInsertEncoder) EncodeInto(value *RepoCmdInsert, buf []byte) {
+
+	pos := uint(0)
+
+	if value.InterestName != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7605))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.InterestName_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.InterestName_encoder.Length > 0 {
+			encoder.InterestName_encoder.EncodeInto(value.InterestName, buf[pos:])
+			pos += encoder.InterestName_encoder.Length
+		}
+	}
+	if value.ForwardingHint != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7606))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.ForwardingHint_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.ForwardingHint_encoder.Length > 0 {
+			encoder.ForwardingHint_encoder.EncodeInto(value.ForwardingHint, buf[pos:])
+			pos += encoder.ForwardingHint_encoder.Length
+		}
+	}
+}
+
+func (encoder *RepoCmdInsertEncoder) Encode(value *RepoCmdInsert) enc.Wire {
+
+	wire := make(enc.Wire, 1)
+	wire[0] = make([]byte, encoder.Length)
+	buf := wire[0]
+	encoder.EncodeInto(value, buf)
+
+	return wire
+}
+
+func (context *RepoCmdInsertParsingContext) Parse(reader enc.WireView, ignoreCritical bool) (*RepoCmdInsert, error) {
+
+	var handled_InterestName bool = false
+	var handled_ForwardingHint bool = false
+
+	progress := -1
+	_ = progress
+
+	value := &RepoCmdInsert{}
+	var err error
+	var startPos int
+	for {
+		startPos = reader.Pos()
+		if startPos >= reader.Length() {
+			break
+		}
+		typ := enc.TLNum(0)
+		l := enc.TLNum(0)
+		typ, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+		l, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+
+		err = nil
+		if handled := false; true {
+			switch typ {
+			case 7605:
+				if true {
+					handled = true
+					handled_InterestName = true
+					value.InterestName, err = context.InterestName_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			case 7606:
+				if true {
+					handled = true
+					handled_ForwardingHint = true
+					value.ForwardingHint, err = context.ForwardingHint_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			default:
+				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
+					return nil, enc.ErrUnrecognizedField{TypeNum: typ}
+				}
+				handled = true
+				err = reader.Skip(int(l))
+			}
+			if err == nil && !handled {
+			}
+			if err != nil {
+				return nil, enc.ErrFailToParse{TypeNum: typ, Err: err}
+			}
+		}
+	}
+
+	startPos = reader.Pos()
+	err = nil
+
+	if !handled_InterestName && err == nil {
+		value.InterestName = nil
+	}
+	if !handled_ForwardingHint && err == nil {
+		value.ForwardingHint = nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return value, nil
+}
+
+func (value *RepoCmdInsert) Encode() enc.Wire {
+	encoder := RepoCmdInsertEncoder{}
+	encoder.Init(value)
+	return encoder.Encode(value)
+}
+
+func (value *RepoCmdInsert) Bytes() []byte {
+	return value.Encode().Join()
+}
+
+func ParseRepoCmdInsert(reader enc.WireView, ignoreCritical bool) (*RepoCmdInsert, error) {
+	context := RepoCmdInsertParsingContext{}
+	context.Init()
+	return context.Parse(reader, ignoreCritical)
+}
+
+type RepoCmdDeleteEncoder struct {
+	Length uint
+
+	ForwardingHint_encoder spec.NameContainerEncoder
+}
+
+type RepoCmdDeleteParsingContext struct {
+	ForwardingHint_context spec.NameContainerParsingContext
+}
+
+func (encoder *RepoCmdDeleteEncoder) Init(value *RepoCmdDelete) {
+
+	if value.ForwardingHint != nil {
+		encoder.ForwardingHint_encoder.Init(value.ForwardingHint)
+	}
+
+	l := uint(0)
+	l += 3
+	l += uint(enc.TLNum(len(value.FileName)).EncodingLength())
+	l += uint(len(value.FileName))
+	if value.ForwardingHint != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.ForwardingHint_encoder.Length).EncodingLength())
+		l += encoder.ForwardingHint_encoder.Length
+	}
+	encoder.Length = l
+
+}
+
+func (context *RepoCmdDeleteParsingContext) Init() {
+
+	context.ForwardingHint_context.Init()
+}
+
+func (encoder *RepoCmdDeleteEncoder) EncodeInto(value *RepoCmdDelete, buf []byte) {
+
+	pos := uint(0)
+
+	buf[pos] = 253
+	binary.BigEndian.PutUint16(buf[pos+1:], uint16(7605))
+	pos += 3
+	pos += uint(enc.TLNum(len(value.FileName)).EncodeInto(buf[pos:]))
+	copy(buf[pos:], value.FileName)
+	pos += uint(len(value.FileName))
+	if value.ForwardingHint != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7606))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.ForwardingHint_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.ForwardingHint_encoder.Length > 0 {
+			encoder.ForwardingHint_encoder.EncodeInto(value.ForwardingHint, buf[pos:])
+			pos += encoder.ForwardingHint_encoder.Length
+		}
+	}
+}
+
+func (encoder *RepoCmdDeleteEncoder) Encode(value *RepoCmdDelete) enc.Wire {
+
+	wire := make(enc.Wire, 1)
+	wire[0] = make([]byte, encoder.Length)
+	buf := wire[0]
+	encoder.EncodeInto(value, buf)
+
+	return wire
+}
+
+func (context *RepoCmdDeleteParsingContext) Parse(reader enc.WireView, ignoreCritical bool) (*RepoCmdDelete, error) {
+
+	var handled_FileName bool = false
+	var handled_ForwardingHint bool = false
+
+	progress := -1
+	_ = progress
+
+	value := &RepoCmdDelete{}
+	var err error
+	var startPos int
+	for {
+		startPos = reader.Pos()
+		if startPos >= reader.Length() {
+			break
+		}
+		typ := enc.TLNum(0)
+		l := enc.TLNum(0)
+		typ, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+		l, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+
+		err = nil
+		if handled := false; true {
+			switch typ {
+			case 7605:
+				if true {
+					handled = true
+					handled_FileName = true
+					{
+						var builder strings.Builder
+						_, err = reader.CopyN(&builder, int(l))
+						if err == nil {
+							value.FileName = builder.String()
+						}
+					}
+				}
+			case 7606:
+				if true {
+					handled = true
+					handled_ForwardingHint = true
+					value.ForwardingHint, err = context.ForwardingHint_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			default:
+				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
+					return nil, enc.ErrUnrecognizedField{TypeNum: typ}
+				}
+				handled = true
+				err = reader.Skip(int(l))
+			}
+			if err == nil && !handled {
+			}
+			if err != nil {
+				return nil, enc.ErrFailToParse{TypeNum: typ, Err: err}
+			}
+		}
+	}
+
+	startPos = reader.Pos()
+	err = nil
+
+	if !handled_FileName && err == nil {
+		err = enc.ErrSkipRequired{Name: "FileName", TypeNum: 7605}
+	}
+	if !handled_ForwardingHint && err == nil {
+		value.ForwardingHint = nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return value, nil
+}
+
+func (value *RepoCmdDelete) Encode() enc.Wire {
+	encoder := RepoCmdDeleteEncoder{}
+	encoder.Init(value)
+	return encoder.Encode(value)
+}
+
+func (value *RepoCmdDelete) Bytes() []byte {
+	return value.Encode().Join()
+}
+
+func ParseRepoCmdDelete(reader enc.WireView, ignoreCritical bool) (*RepoCmdDelete, error) {
+	context := RepoCmdDeleteParsingContext{}
 	context.Init()
 	return context.Parse(reader, ignoreCritical)
 }
@@ -1158,8 +1548,6 @@ func ParseBlobFetch(reader enc.WireView, ignoreCritical bool) (*BlobFetch, error
 type SecurityConfigObjectEncoder struct {
 	Length uint
 
-	Schema_encoder struct {
-	}
 	Anchors_subencoder []struct {
 	}
 }
@@ -1168,14 +1556,7 @@ type SecurityConfigObjectParsingContext struct {
 }
 
 func (encoder *SecurityConfigObjectEncoder) Init(value *SecurityConfigObject) {
-	{
-		encoder := &encoder.Schema_encoder
-		value := struct {
-		}{}
 
-		_ = encoder
-		_ = value
-	}
 	{
 		Anchors_l := len(value.Anchors)
 		encoder.Anchors_subencoder = make([]struct {
@@ -1198,22 +1579,10 @@ func (encoder *SecurityConfigObjectEncoder) Init(value *SecurityConfigObject) {
 	}
 
 	l := uint(0)
-	{
-		encoder := &encoder.Schema_encoder
-		value := struct {
-			Schema []byte
-		}{
-			Schema: value.Schema,
-		}
-		{
-			if value.Schema != nil {
-				l += 3
-				l += uint(enc.TLNum(len(value.Schema)).EncodingLength())
-				l += uint(len(value.Schema))
-			}
-			_ = encoder
-			_ = value
-		}
+	if value.Schema != nil {
+		l += 3
+		l += uint(enc.TLNum(len(value.Schema)).EncodingLength())
+		l += uint(len(value.Schema))
 	}
 	if value.Anchors != nil {
 		for seq_i, seq_v := range value.Anchors {
@@ -1248,25 +1617,13 @@ func (encoder *SecurityConfigObjectEncoder) EncodeInto(value *SecurityConfigObje
 
 	pos := uint(0)
 
-	{
-		encoder := &encoder.Schema_encoder
-		value := struct {
-			Schema []byte
-		}{
-			Schema: value.Schema,
-		}
-		{
-			if value.Schema != nil {
-				buf[pos] = 253
-				binary.BigEndian.PutUint16(buf[pos+1:], uint16(421))
-				pos += 3
-				pos += uint(enc.TLNum(len(value.Schema)).EncodeInto(buf[pos:]))
-				copy(buf[pos:], value.Schema)
-				pos += uint(len(value.Schema))
-			}
-			_ = encoder
-			_ = value
-		}
+	if value.Schema != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(421))
+		pos += 3
+		pos += uint(enc.TLNum(len(value.Schema)).EncodeInto(buf[pos:]))
+		copy(buf[pos:], value.Schema)
+		pos += uint(len(value.Schema))
 	}
 	if value.Anchors != nil {
 		for seq_i, seq_v := range value.Anchors {
@@ -1384,7 +1741,7 @@ func (context *SecurityConfigObjectParsingContext) Parse(reader enc.WireView, ig
 		value.Schema = nil
 	}
 	if !handled_Anchors && err == nil {
-		value.Anchors = nil
+		// sequence - skip
 	}
 
 	if err != nil {
