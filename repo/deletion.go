@@ -79,7 +79,7 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	}
 
 	// TODO: enforce trust schema defined by repo provider
-	schema := trust_schema.NewNullSchema()
+	schema := trust_schema.NewPrefixSchema()
 
 	anchors := config.Repo.TrustAnchorNames()
 

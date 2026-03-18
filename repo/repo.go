@@ -67,7 +67,7 @@ func (r *Repo) Start() (err error) {
 	r.keychain = kc
 
 	// TODO: enforce trust schema defined by repo provider
-	schema := trust_schema.NewNullSchema()
+	schema := trust_schema.NewPrefixSchema()
 
 	// TODO: handle app-specific case
 	anchors := r.config.TrustAnchorNames()
@@ -85,7 +85,6 @@ func (r *Repo) Start() (err error) {
 
 	// Start NDN Object API client
 	r.client = object.NewClient(r.engine, r.store, trust)
-	// r.client = object.NewClient(r.engine, r.store, nil)
 	if err := r.client.Start(); err != nil {
 		return err
 	}

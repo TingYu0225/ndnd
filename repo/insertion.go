@@ -220,6 +220,7 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	}
 
 	// Create a basic engine with a default face
+	println("Creating engine...")
 	app := engine.NewBasicEngine(engine.NewDefaultFace())
 	if err := app.Start(); err != nil {
 		fmt.Println("engine start failed:", err)
@@ -234,10 +235,8 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 		fmt.Println("keychain creation failed:", err)
 		return
 	}
-
-	// TODO: enforce trust schema defined by repo provider
-	schema := trust_schema.NewNullSchema()
-
+	fmt.Println(kc)
+	schema := trust_schema.NewPrefixSchema()
 	anchors := config.Repo.TrustAnchorNames()
 
 	// Create trust config
@@ -248,8 +247,8 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	}
 	trust.UseDataNameFwHint = true
 
-	// client := object.NewClient(app, storage.NewMemoryStore(), trust)
-	client := object.NewClient(app, storage.NewMemoryStore(), nil)
+	client := object.NewClient(app, cliStore, trust)
+	// client := object.NewClient(app, storage.NewMemoryStore(), nil)
 	if err := client.Start(); err != nil {
 		fmt.Println("client start failed:", err)
 		return
