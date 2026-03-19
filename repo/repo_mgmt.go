@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +22,6 @@ import (
 // (AI GENERATED DESCRIPTION): Parses a repository management command from the received wire and dispatches it to the sync‑join handler if present, otherwise logs a warning about an unknown command.
 func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) {
 	cmd, err := tlv.ParseRepoCmd(enc.NewWireView(wire), false)
-	println("DEBUG: Received management command:", cmd)
 	if err != nil {
 		log.Warn(r, "Failed to parse management command", "err", err)
 		_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "failed to parse management command"}).Encode())
@@ -47,7 +45,6 @@ func (r *Repo) onMgmtCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) 
 		go r.handleInsertion(cmd.RepoCmdInsert, reply)
 		return
 	}
-	// println("DEBUG: Received management command that is not SyncJoin, SyncLeave, or BlobFetch")
 	log.Warn(r, "Unknown management command received")
 	_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "unknown management command"}).Encode())
 }
@@ -65,14 +62,16 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 	}
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
 
-	resultCh := make(chan []byte, 1)
 	// TODO: replace with better timeout calculation based on file size or other factors
 	timeout := 5 * time.Second
-	r.publishStatus(timeout, currentName, jobNamePrefix, resultCh)
-
-	//  build file for received file
+	resultCh := make(chan []byte, 1)
 	forwardingHint := cmd.ForwardingHint.Name
 	fileName := cmd.InterestName.Name.At(-2).String()
+	publishStatus(r.client, timeout, currentName, jobNamePrefix, resultCh)
+
+	//  lookupCatalogEntries(r.client, r.config, fileName, forwardingHint) // check if file already exists in catalog
+
+	//  build file for received file
 	dirParts := []string{r.config.StorageDir}
 	for i := 0; i < len(forwardingHint); i++ {
 		dirParts = append(dirParts, forwardingHint.At(i).CanonicalString())
@@ -80,8 +79,10 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 	dirPath := filepath.Join(dirParts...)
 	println("DEBUG: Constructed directory path for insertion:", dirPath)
 	println(forwardingHint.String())
+
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
-		resultCh <- []byte("failed: " + err.Error())
+		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+		resultCh <- payload
 		return
 	}
 
@@ -89,7 +90,8 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 
 	file, err := os.Create(filePath)
 	if err != nil {
-		resultCh <- []byte("failed: " + err.Error())
+		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+		resultCh <- payload
 		return
 	}
 	defer file.Close()
@@ -132,16 +134,25 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 	select {
 	case err := <-done: // fetch completed or failedq
 		if err != nil {
-			resultCh <- []byte("failed:" + err.Error())
+			payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+			resultCh <- payload
 			println("DEBUG: Fetch failed with error:", err.Error())
 		}
 	case <-time.After(8 * time.Second):
-		resultCh <- []byte("failed: fetch timeout")
+		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: "fetch timeout"})
+		resultCh <- payload
 		println("DEBUG: select timeout")
 	}
-	// TODO: modify catalog to include user
-	updateFileOwner(r.config.CatalogPath, fileName, r.config.Name) // add user name
-	resultCh <- []byte("done")
+
+	err = sendCatalogInsert(r.client, r.config, fileName, forwardingHint, r.config.NameN)
+	if err != nil {
+		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+		resultCh <- payload
+		return
+	}
+	// updateFileOwner(r.config.CatalogPath, fileName, r.config.Name) // add user name
+	payload, _ := json.Marshal(JobStatusPayload{Status: "success"})
+	resultCh <- payload
 	println("DEBUG: reply completed")
 }
 
@@ -160,7 +171,7 @@ func (r *Repo) handleDeletion(cmd *tlv.RepoCmdDelete, reply func(enc.Wire) error
 	resultCh := make(chan []byte, 1)
 	// TODO: replace with better timeout calculation based on file size or other factors
 	timeout := 1 * time.Second
-	r.publishStatus(timeout, currentName, jobNamePrefix, resultCh)
+	publishStatus(r.client, timeout, currentName, jobNamePrefix, resultCh)
 	// defer close(doneCh)
 	dirParts := []string{r.config.StorageDir}
 	for i := 0; i < len(forwardingHint); i++ {
@@ -169,84 +180,35 @@ func (r *Repo) handleDeletion(cmd *tlv.RepoCmdDelete, reply func(enc.Wire) error
 	dirPath := filepath.Join(dirParts...)
 	fileName := cmd.FileName
 	filePath := filepath.Join(dirPath, fileName)
-	// TODO: check if file is already here (catalog)
+
 	// find status of this file
 	if _, err := os.Stat(filePath); err != nil {
 		// if file doesn't exit
 		if os.IsNotExist(err) {
-			resultCh <- []byte("failed: file not found")
+			payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: "file not found"})
+			resultCh <- payload
 		} else {
-			resultCh <- []byte("failed: " + err.Error())
+			payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+			resultCh <- payload
 		}
 		return
 	}
 
 	if err := os.Remove(filePath); err != nil {
-		resultCh <- []byte("failed: " + err.Error())
+		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+		resultCh <- payload
 		return
 	}
-
-	deleteFileFromCatalog(r.config.CatalogPath, fileName)
-	resultCh <- []byte("done")
-	println("delete file success")
-}
-
-func (r *Repo) publishStatus(timeout time.Duration, currentName, jobNamePrefix enc.Name, resultCh <-chan []byte) {
-	publishStatus := func(name enc.Name, payload []byte, period time.Duration) {
-		_, err := r.client.Produce(ndn.ProduceArgs{
-			Name:            name,
-			Content:         enc.Wire{payload},
-			FreshnessPeriod: period,
-		})
-		if err != nil {
-			log.Error(r, "Failed to produce progress update", "err", err)
-		}
+	err := sendCatalogDelete(r.client, r.config, fileName, forwardingHint, r.config.NameN)
+	if err != nil {
+		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
+		resultCh <- payload
+		return
 	}
-
-	go func() { // background goroutine to publish heartbeat until job is done
-
-		ticker := time.NewTicker(timeout)
-		defer ticker.Stop()
-		nextName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
-
-		payload := JobStatusPayload{
-			Status:           "processing",
-			NextInterestName: nextName.String(),
-			RetryAfter:       timeout.String(),
-		}
-		payloadBytes, _ := json.Marshal(payload)
-		publishStatus(currentName, payloadBytes, timeout)
-
-		currentName = nextName
-		for {
-			select {
-			// once u get the final result
-			case result := <-resultCh:
-				s := strings.TrimSpace(string(result))
-				payload := JobStatusPayload{}
-				switch {
-				case strings.HasPrefix(s, "failed:"):
-					payload.Status = "failed"
-					payload.Message = strings.TrimSpace(strings.TrimPrefix(s, "failed:"))
-				case s == "done":
-					payload.Status = "done"
-				default:
-					payload.Status = "failed"
-					payload.Message = "unexpected job result: " + s
-				}
-				payloadBytes, _ := json.Marshal(payload)
-				publishStatus(currentName, payloadBytes, 60*time.Second)
-				return
-			// ask client to check status after %d seconds
-			case <-ticker.C:
-				nextName = jobNamePrefix.WithVersion(enc.VersionUnixMicro)
-				payload.NextInterestName = nextName.String()
-				payloadBytes, _ := json.Marshal(payload)
-				publishStatus(currentName, payloadBytes, timeout)
-				currentName = nextName
-			}
-		}
-	}()
+	//deleteFileFromCatalog(r.config.CatalogPath, fileName)
+	payload, _ := json.Marshal(JobStatusPayload{Status: "success"})
+	resultCh <- payload
+	println("delete file success")
 }
 
 // (AI GENERATED DESCRIPTION): Handles a `SyncJoin` command by starting an SVS session when the protocol is `SyncProtocolSvsV3`, or returning an error status if the protocol is unknown or the session fails to start.

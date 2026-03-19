@@ -66,7 +66,7 @@ func (r *Repo) Start() (err error) {
 	r.keychain = kc
 
 	// Create trust config from the configured LVS schema.
-	trust, err := newLvsTrustConfig(kc, r.config)
+	trust, err := r.config.NewTrustConfig(kc)
 	if err != nil {
 		return err
 	}

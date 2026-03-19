@@ -44,3 +44,9 @@ func run(cmd *cobra.Command, args []string) {
 	signal.Notify(sigChannel, os.Interrupt, syscall.SIGTERM)
 	<-sigChannel
 }
+
+func init() {
+	CmdRepo.AddCommand(CmdRepoInsert())
+	CmdRepo.AddCommand(CmdRepoDelete())
+	CmdRepo.AddCommand(CmdRepoCatalog())
+}

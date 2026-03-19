@@ -7,6 +7,9 @@
 // Command names are signed before the auto-added version component is considered.
 #repo_insert_cmd: #repo/"insert" <= #repo_cert
 #repo_delete_cmd: #repo/"delete" <= #repo_cert
+#catalog_getInfo_cmd: #repo/"getinfo" <= #repo_cert
+#catalog_insert_cmd: #repo/"insertcatalog" <= #repo_cert
+#catalog_delete_cmd: #repo/"deletecatalog" <= #repo_cert
 
 // Repo object names are checked on their logical form.
 // The client removes version/segment/RDR metadata components before signer selection

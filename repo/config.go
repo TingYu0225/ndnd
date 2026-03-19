@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 
 	enc "github.com/named-data/ndnd/std/encoding"
+	"github.com/named-data/ndnd/std/ndn"
+	sec "github.com/named-data/ndnd/std/security"
+	"github.com/named-data/ndnd/std/security/trust_schema"
 )
 
 // Default binary LVS schema bundled with the repo.
@@ -25,8 +28,9 @@ type Config struct {
 	TrustAnchors []string `json:"trust_anchors"`
 	// IgnoreValidity skips validity period checks when fetching remote data (e.g. SVS snapshots).
 	IgnoreValidity bool `json:"ignore_validity"`
-	// Optional: add if u want to use insertion command
-	CatalogPath string `json:"catalog_path"`
+	// CatalogName is the name of the catalog.
+	CatalogName  string `json:"catalog_name"`
+	CatalogNameN enc.Name
 	// NameN is the parsed name of the repo service.
 	NameN enc.Name
 }
@@ -51,17 +55,9 @@ func (c *Config) Parse() (err error) {
 		c.StorageDir = path
 	}
 
-	if c.CatalogPath == "" {
-		return fmt.Errorf("catalog path must be set")
-	} else {
-		path, err := filepath.Abs(c.CatalogPath)
-		if err != nil {
-			return fmt.Errorf("failed to get absolute path: %w", err)
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return fmt.Errorf("failed to create storage directory: %w", err)
-		}
-		c.CatalogPath = path
+	c.CatalogNameN, err = enc.NameFromStr(c.CatalogName)
+	if err != nil || len(c.CatalogNameN) == 0 {
+		return fmt.Errorf("failed to parse or invalid catalog name (%s): %w", c.CatalogName, err)
 	}
 
 	return nil
@@ -83,6 +79,21 @@ func (c *Config) TrustAnchorNames() []enc.Name {
 // SchemaBytes returns the loaded binary LVS schema.
 func (c *Config) SchemaBytes() []byte {
 	return defaultSchemaBytes
+}
+
+// NewTrustConfig builds a trust config from the embedded LVS schema.
+func (c *Config) NewTrustConfig(keychain ndn.KeyChain) (*sec.TrustConfig, error) {
+	schema, err := trust_schema.NewLvsSchema(c.SchemaBytes())
+	if err != nil {
+		return nil, fmt.Errorf("invalid embedded repo LVS schema: %w", err)
+	}
+
+	trust, err := sec.NewTrustConfig(keychain, schema, c.TrustAnchorNames())
+	if err != nil {
+		return nil, err
+	}
+	trust.UseDataNameFwHint = true
+	return trust, nil
 }
 
 // (AI GENERATED DESCRIPTION): Returns a new Config with default placeholder values: empty Name and StorageDir strings, and a nil NameN slice.

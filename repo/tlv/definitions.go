@@ -83,3 +83,28 @@ type SecurityConfigObject struct {
 	//+field:sequence:[]byte:binary:[]byte
 	Anchors [][]byte `tlv:"0x1BA"`
 }
+
+type CatalogCmd struct {
+	//+field:struct:CatalogGetFileInfo
+	GetFileInfo *CatalogGetFileInfo `tlv:"0x1E00"`
+	//+field:struct:CatalogEntry
+	Insert *CatalogEntry `tlv:"0x1E01"`
+	//+field:struct:CatalogEntry
+	Delete *CatalogEntry `tlv:"0x1E02"`
+}
+
+type CatalogGetFileInfo struct {
+	//+field:string
+	FileName string `tlv:"0x1E00"`
+	//+field:struct:spec.NameContainer
+	OwnerName *spec.NameContainer `tlv:"0x1E01"`
+}
+
+type CatalogEntry struct {
+	//+field:string
+	FileName string `tlv:"0x1E05"`
+	//+field:struct:spec.NameContainer
+	OwnerName *spec.NameContainer `tlv:"0x1E06"`
+	//+field:struct:spec.NameContainer
+	ServerName *spec.NameContainer `tlv:"0x1E07"`
+}

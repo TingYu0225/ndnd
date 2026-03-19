@@ -128,5 +128,9 @@ func cmdRepo() *cobra.Command {
 	delete.GroupID = "control"
 	cmdRepo.AddCommand(delete)
 
+	catalog := repo.CmdRepoCatalog()
+	catalog.GroupID = "control"
+	cmdRepo.AddCommand(catalog)
+
 	return cmdRepo
 }

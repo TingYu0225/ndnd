@@ -2,7 +2,6 @@ package repo
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/named-data/ndnd/repo/tlv"
 	enc "github.com/named-data/ndnd/std/encoding"
@@ -20,6 +19,8 @@ import (
 type RepoDeleteTool struct {
 	fileName       string
 	forwardingHint enc.Name
+	client         ndn.Client
+	config         *Config
 }
 
 // CmdRepoDelete sends a command to the repo daemon that deletes one Data packet.
@@ -27,6 +28,8 @@ func CmdRepoDelete() *cobra.Command {
 	t := RepoDeleteTool{
 		fileName:       "",
 		forwardingHint: enc.Name{},
+		client:         nil,
+		config:         nil,
 	}
 
 	cmd := &cobra.Command{
@@ -42,25 +45,20 @@ func CmdRepoDelete() *cobra.Command {
 
 func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	t.fileName = args[0]
-	config := struct {
+	tempConfig := struct {
 		Repo *Config `json:"repo"`
 	}{
 		Repo: DefaultConfig(),
 	}
 
-	toolutils.ReadYaml(&config, args[1])
+	toolutils.ReadYaml(&tempConfig, args[1])
+	t.config = tempConfig.Repo
 
-	if err := config.Repo.Parse(); err != nil {
+	if err := t.config.Parse(); err != nil {
 		log.Fatal(nil, "Configuration error", "err", err)
 	}
 	// Find the owner of target file
 	// TODO check if this is good to go?
-	target, err := findFileOwner(config.Repo.CatalogPath, t.fileName)
-	if err != nil {
-		fmt.Println("catalog lookup failed:", err)
-		return
-	}
-	t.forwardingHint, _ = enc.NameFromStr(target)
 
 	// Create a basic engine with a default client
 	println("Creating engine...")
@@ -72,47 +70,61 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	defer app.Stop()
 
 	cliStore := storage.NewMemoryStore()
-	kc, err := keychain.NewKeyChain(config.Repo.KeyChainUri, cliStore)
+	kc, err := keychain.NewKeyChain(t.config.KeyChainUri, cliStore)
 	if err != nil {
 		fmt.Println("keychain creation failed:", err)
 		return
 	}
 
 	// Create trust config from the configured LVS schema.
-	trust, err := newLvsTrustConfig(kc, config.Repo)
+	trust, err := t.config.NewTrustConfig(kc)
 	if err != nil {
 		fmt.Println("trust config creation failed:", err)
 		return
 	}
 
-	client := object.NewClient(app, cliStore, trust)
-	if err := client.Start(); err != nil {
+	t.client = object.NewClient(app, cliStore, trust)
+	if err := t.client.Start(); err != nil {
 		fmt.Println("client start failed:", err)
 		return
 	}
-	client.AnnouncePrefix(ndn.Announcement{
-		Name:   config.Repo.NameN,
+	t.client.AnnouncePrefix(ndn.Announcement{
+		Name:   t.config.NameN,
 		Expose: true,
 	})
-	defer client.Stop()
+	defer t.client.Stop()
 
-	// cmdName, err := enc.NameFromStr(config.Repo.Name)
-	// cmdName = cmdName.Append(enc.NewKeywordComponent("insert")).
-	// 	WithVersion(enc.VersionUnixMicro)
+	// ask catalog daemon for the target file's owner and server
+	result, err := lookupCatalogEntries(t.client, t.config, t.fileName, t.config.NameN)
+	if err != nil {
+		fmt.Println("lookup catalog entries failed:", err)
+		return
+	}
+	if len(result) > 1 {
+		fmt.Println("More than one entries found for the file")
+		return
+	}
+	t.forwardingHint, _ = enc.NameFromStr(result[0].Server)
 
+	// send delete command to repo daemon
+	if err := t.sendDeleteCommand(); err != nil {
+		fmt.Println("send delete command failed:", err)
+		return
+	}
+}
+
+func (t *RepoDeleteTool) sendDeleteCommand() error {
+	jobCh := make(chan string, 1)
+	done := make(chan error, 1)
 	payload := (&tlv.RepoCmd{
 		RepoCmdDelete: &tlv.RepoCmdDelete{
 			FileName:       t.fileName,
-			ForwardingHint: &spec.NameContainer{Name: config.Repo.NameN},
+			ForwardingHint: &spec.NameContainer{Name: t.config.NameN},
 		},
 	}).Encode()
-	// Send command to repo
-	jobCh := make(chan string, 1)
-	done := make(chan error, 1)
 
-	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("delete")).
-		WithVersion(enc.VersionUnixMicro)
-	client.ExpressCommand(t.forwardingHint, cmdName, payload, func(w enc.Wire, err error) {
+	cmdName := t.config.NameN.Append(enc.NewKeywordComponent("delete")).WithVersion(enc.VersionUnixMicro)
+	t.client.ExpressCommand(t.forwardingHint, cmdName, payload, func(w enc.Wire, err error) {
 		if err != nil {
 			done <- err
 			return
@@ -138,19 +150,17 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	case err := <-done:
 		if err != nil {
 			fmt.Println("failed:", err)
-			return
+			return err
 		}
 	case jobName := <-jobCh:
 		fmt.Printf("delete job started with job name: %s\n", jobName)
 		fmt.Println("delete command success")
 		// polling job status until it's done or timeout
-		if err := waitJobDone(client, jobName); err != nil {
+		if _, err := waitJobResult(t.client, jobName); err != nil {
 			fmt.Println("wait job failed:", err)
-			return
+			return err
 		}
 		fmt.Println("Delete success")
-	case <-time.After(30 * time.Second):
-		fmt.Printf("delete command timeout after %s\n", 30*time.Second)
 	}
-
+	return nil
 }

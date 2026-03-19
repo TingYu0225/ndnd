@@ -1766,3 +1766,555 @@ func ParseSecurityConfigObject(reader enc.WireView, ignoreCritical bool) (*Secur
 	context.Init()
 	return context.Parse(reader, ignoreCritical)
 }
+
+type CatalogCmdEncoder struct {
+	Length uint
+
+	GetFileInfo_encoder CatalogGetFileInfoEncoder
+	Insert_encoder      CatalogEntryEncoder
+	Delete_encoder      CatalogEntryEncoder
+}
+
+type CatalogCmdParsingContext struct {
+	GetFileInfo_context CatalogGetFileInfoParsingContext
+	Insert_context      CatalogEntryParsingContext
+	Delete_context      CatalogEntryParsingContext
+}
+
+func (encoder *CatalogCmdEncoder) Init(value *CatalogCmd) {
+	if value.GetFileInfo != nil {
+		encoder.GetFileInfo_encoder.Init(value.GetFileInfo)
+	}
+	if value.Insert != nil {
+		encoder.Insert_encoder.Init(value.Insert)
+	}
+	if value.Delete != nil {
+		encoder.Delete_encoder.Init(value.Delete)
+	}
+
+	l := uint(0)
+	if value.GetFileInfo != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.GetFileInfo_encoder.Length).EncodingLength())
+		l += encoder.GetFileInfo_encoder.Length
+	}
+	if value.Insert != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.Insert_encoder.Length).EncodingLength())
+		l += encoder.Insert_encoder.Length
+	}
+	if value.Delete != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.Delete_encoder.Length).EncodingLength())
+		l += encoder.Delete_encoder.Length
+	}
+	encoder.Length = l
+
+}
+
+func (context *CatalogCmdParsingContext) Init() {
+	context.GetFileInfo_context.Init()
+	context.Insert_context.Init()
+	context.Delete_context.Init()
+}
+
+func (encoder *CatalogCmdEncoder) EncodeInto(value *CatalogCmd, buf []byte) {
+
+	pos := uint(0)
+
+	if value.GetFileInfo != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7680))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.GetFileInfo_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.GetFileInfo_encoder.Length > 0 {
+			encoder.GetFileInfo_encoder.EncodeInto(value.GetFileInfo, buf[pos:])
+			pos += encoder.GetFileInfo_encoder.Length
+		}
+	}
+	if value.Insert != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7681))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.Insert_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.Insert_encoder.Length > 0 {
+			encoder.Insert_encoder.EncodeInto(value.Insert, buf[pos:])
+			pos += encoder.Insert_encoder.Length
+		}
+	}
+	if value.Delete != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7682))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.Delete_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.Delete_encoder.Length > 0 {
+			encoder.Delete_encoder.EncodeInto(value.Delete, buf[pos:])
+			pos += encoder.Delete_encoder.Length
+		}
+	}
+}
+
+func (encoder *CatalogCmdEncoder) Encode(value *CatalogCmd) enc.Wire {
+
+	wire := make(enc.Wire, 1)
+	wire[0] = make([]byte, encoder.Length)
+	buf := wire[0]
+	encoder.EncodeInto(value, buf)
+
+	return wire
+}
+
+func (context *CatalogCmdParsingContext) Parse(reader enc.WireView, ignoreCritical bool) (*CatalogCmd, error) {
+
+	var handled_GetFileInfo bool = false
+	var handled_Insert bool = false
+	var handled_Delete bool = false
+
+	progress := -1
+	_ = progress
+
+	value := &CatalogCmd{}
+	var err error
+	var startPos int
+	for {
+		startPos = reader.Pos()
+		if startPos >= reader.Length() {
+			break
+		}
+		typ := enc.TLNum(0)
+		l := enc.TLNum(0)
+		typ, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+		l, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+
+		err = nil
+		if handled := false; true {
+			switch typ {
+			case 7680:
+				if true {
+					handled = true
+					handled_GetFileInfo = true
+					value.GetFileInfo, err = context.GetFileInfo_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			case 7681:
+				if true {
+					handled = true
+					handled_Insert = true
+					value.Insert, err = context.Insert_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			case 7682:
+				if true {
+					handled = true
+					handled_Delete = true
+					value.Delete, err = context.Delete_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			default:
+				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
+					return nil, enc.ErrUnrecognizedField{TypeNum: typ}
+				}
+				handled = true
+				err = reader.Skip(int(l))
+			}
+			if err == nil && !handled {
+			}
+			if err != nil {
+				return nil, enc.ErrFailToParse{TypeNum: typ, Err: err}
+			}
+		}
+	}
+
+	startPos = reader.Pos()
+	err = nil
+
+	if !handled_GetFileInfo && err == nil {
+		value.GetFileInfo = nil
+	}
+	if !handled_Insert && err == nil {
+		value.Insert = nil
+	}
+	if !handled_Delete && err == nil {
+		value.Delete = nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return value, nil
+}
+
+func (value *CatalogCmd) Encode() enc.Wire {
+	encoder := CatalogCmdEncoder{}
+	encoder.Init(value)
+	return encoder.Encode(value)
+}
+
+func (value *CatalogCmd) Bytes() []byte {
+	return value.Encode().Join()
+}
+
+func ParseCatalogCmd(reader enc.WireView, ignoreCritical bool) (*CatalogCmd, error) {
+	context := CatalogCmdParsingContext{}
+	context.Init()
+	return context.Parse(reader, ignoreCritical)
+}
+
+type CatalogGetFileInfoEncoder struct {
+	Length uint
+
+	OwnerName_encoder spec.NameContainerEncoder
+}
+
+type CatalogGetFileInfoParsingContext struct {
+	OwnerName_context spec.NameContainerParsingContext
+}
+
+func (encoder *CatalogGetFileInfoEncoder) Init(value *CatalogGetFileInfo) {
+
+	if value.OwnerName != nil {
+		encoder.OwnerName_encoder.Init(value.OwnerName)
+	}
+
+	l := uint(0)
+	l += 3
+	l += uint(enc.TLNum(len(value.FileName)).EncodingLength())
+	l += uint(len(value.FileName))
+	if value.OwnerName != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.OwnerName_encoder.Length).EncodingLength())
+		l += encoder.OwnerName_encoder.Length
+	}
+	encoder.Length = l
+
+}
+
+func (context *CatalogGetFileInfoParsingContext) Init() {
+
+	context.OwnerName_context.Init()
+}
+
+func (encoder *CatalogGetFileInfoEncoder) EncodeInto(value *CatalogGetFileInfo, buf []byte) {
+
+	pos := uint(0)
+
+	buf[pos] = 253
+	binary.BigEndian.PutUint16(buf[pos+1:], uint16(7680))
+	pos += 3
+	pos += uint(enc.TLNum(len(value.FileName)).EncodeInto(buf[pos:]))
+	copy(buf[pos:], value.FileName)
+	pos += uint(len(value.FileName))
+	if value.OwnerName != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7681))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.OwnerName_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.OwnerName_encoder.Length > 0 {
+			encoder.OwnerName_encoder.EncodeInto(value.OwnerName, buf[pos:])
+			pos += encoder.OwnerName_encoder.Length
+		}
+	}
+}
+
+func (encoder *CatalogGetFileInfoEncoder) Encode(value *CatalogGetFileInfo) enc.Wire {
+
+	wire := make(enc.Wire, 1)
+	wire[0] = make([]byte, encoder.Length)
+	buf := wire[0]
+	encoder.EncodeInto(value, buf)
+
+	return wire
+}
+
+func (context *CatalogGetFileInfoParsingContext) Parse(reader enc.WireView, ignoreCritical bool) (*CatalogGetFileInfo, error) {
+
+	var handled_FileName bool = false
+	var handled_OwnerName bool = false
+
+	progress := -1
+	_ = progress
+
+	value := &CatalogGetFileInfo{}
+	var err error
+	var startPos int
+	for {
+		startPos = reader.Pos()
+		if startPos >= reader.Length() {
+			break
+		}
+		typ := enc.TLNum(0)
+		l := enc.TLNum(0)
+		typ, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+		l, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+
+		err = nil
+		if handled := false; true {
+			switch typ {
+			case 7680:
+				if true {
+					handled = true
+					handled_FileName = true
+					{
+						var builder strings.Builder
+						_, err = reader.CopyN(&builder, int(l))
+						if err == nil {
+							value.FileName = builder.String()
+						}
+					}
+				}
+			case 7681:
+				if true {
+					handled = true
+					handled_OwnerName = true
+					value.OwnerName, err = context.OwnerName_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			default:
+				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
+					return nil, enc.ErrUnrecognizedField{TypeNum: typ}
+				}
+				handled = true
+				err = reader.Skip(int(l))
+			}
+			if err == nil && !handled {
+			}
+			if err != nil {
+				return nil, enc.ErrFailToParse{TypeNum: typ, Err: err}
+			}
+		}
+	}
+
+	startPos = reader.Pos()
+	err = nil
+
+	if !handled_FileName && err == nil {
+		err = enc.ErrSkipRequired{Name: "FileName", TypeNum: 7680}
+	}
+	if !handled_OwnerName && err == nil {
+		value.OwnerName = nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return value, nil
+}
+
+func (value *CatalogGetFileInfo) Encode() enc.Wire {
+	encoder := CatalogGetFileInfoEncoder{}
+	encoder.Init(value)
+	return encoder.Encode(value)
+}
+
+func (value *CatalogGetFileInfo) Bytes() []byte {
+	return value.Encode().Join()
+}
+
+func ParseCatalogGetFileInfo(reader enc.WireView, ignoreCritical bool) (*CatalogGetFileInfo, error) {
+	context := CatalogGetFileInfoParsingContext{}
+	context.Init()
+	return context.Parse(reader, ignoreCritical)
+}
+
+type CatalogEntryEncoder struct {
+	Length uint
+
+	OwnerName_encoder  spec.NameContainerEncoder
+	ServerName_encoder spec.NameContainerEncoder
+}
+
+type CatalogEntryParsingContext struct {
+	OwnerName_context  spec.NameContainerParsingContext
+	ServerName_context spec.NameContainerParsingContext
+}
+
+func (encoder *CatalogEntryEncoder) Init(value *CatalogEntry) {
+
+	if value.OwnerName != nil {
+		encoder.OwnerName_encoder.Init(value.OwnerName)
+	}
+	if value.ServerName != nil {
+		encoder.ServerName_encoder.Init(value.ServerName)
+	}
+
+	l := uint(0)
+	l += 3
+	l += uint(enc.TLNum(len(value.FileName)).EncodingLength())
+	l += uint(len(value.FileName))
+	if value.OwnerName != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.OwnerName_encoder.Length).EncodingLength())
+		l += encoder.OwnerName_encoder.Length
+	}
+	if value.ServerName != nil {
+		l += 3
+		l += uint(enc.TLNum(encoder.ServerName_encoder.Length).EncodingLength())
+		l += encoder.ServerName_encoder.Length
+	}
+	encoder.Length = l
+
+}
+
+func (context *CatalogEntryParsingContext) Init() {
+
+	context.OwnerName_context.Init()
+	context.ServerName_context.Init()
+}
+
+func (encoder *CatalogEntryEncoder) EncodeInto(value *CatalogEntry, buf []byte) {
+
+	pos := uint(0)
+
+	buf[pos] = 253
+	binary.BigEndian.PutUint16(buf[pos+1:], uint16(7685))
+	pos += 3
+	pos += uint(enc.TLNum(len(value.FileName)).EncodeInto(buf[pos:]))
+	copy(buf[pos:], value.FileName)
+	pos += uint(len(value.FileName))
+	if value.OwnerName != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7686))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.OwnerName_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.OwnerName_encoder.Length > 0 {
+			encoder.OwnerName_encoder.EncodeInto(value.OwnerName, buf[pos:])
+			pos += encoder.OwnerName_encoder.Length
+		}
+	}
+	if value.ServerName != nil {
+		buf[pos] = 253
+		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7687))
+		pos += 3
+		pos += uint(enc.TLNum(encoder.ServerName_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.ServerName_encoder.Length > 0 {
+			encoder.ServerName_encoder.EncodeInto(value.ServerName, buf[pos:])
+			pos += encoder.ServerName_encoder.Length
+		}
+	}
+}
+
+func (encoder *CatalogEntryEncoder) Encode(value *CatalogEntry) enc.Wire {
+
+	wire := make(enc.Wire, 1)
+	wire[0] = make([]byte, encoder.Length)
+	buf := wire[0]
+	encoder.EncodeInto(value, buf)
+
+	return wire
+}
+
+func (context *CatalogEntryParsingContext) Parse(reader enc.WireView, ignoreCritical bool) (*CatalogEntry, error) {
+
+	var handled_FileName bool = false
+	var handled_OwnerName bool = false
+	var handled_ServerName bool = false
+
+	progress := -1
+	_ = progress
+
+	value := &CatalogEntry{}
+	var err error
+	var startPos int
+	for {
+		startPos = reader.Pos()
+		if startPos >= reader.Length() {
+			break
+		}
+		typ := enc.TLNum(0)
+		l := enc.TLNum(0)
+		typ, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+		l, err = reader.ReadTLNum()
+		if err != nil {
+			return nil, enc.ErrFailToParse{TypeNum: 0, Err: err}
+		}
+
+		err = nil
+		if handled := false; true {
+			switch typ {
+			case 7685:
+				if true {
+					handled = true
+					handled_FileName = true
+					{
+						var builder strings.Builder
+						_, err = reader.CopyN(&builder, int(l))
+						if err == nil {
+							value.FileName = builder.String()
+						}
+					}
+				}
+			case 7686:
+				if true {
+					handled = true
+					handled_OwnerName = true
+					value.OwnerName, err = context.OwnerName_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			case 7687:
+				if true {
+					handled = true
+					handled_ServerName = true
+					value.ServerName, err = context.ServerName_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+				}
+			default:
+				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
+					return nil, enc.ErrUnrecognizedField{TypeNum: typ}
+				}
+				handled = true
+				err = reader.Skip(int(l))
+			}
+			if err == nil && !handled {
+			}
+			if err != nil {
+				return nil, enc.ErrFailToParse{TypeNum: typ, Err: err}
+			}
+		}
+	}
+
+	startPos = reader.Pos()
+	err = nil
+
+	if !handled_FileName && err == nil {
+		err = enc.ErrSkipRequired{Name: "FileName", TypeNum: 7685}
+	}
+	if !handled_OwnerName && err == nil {
+		value.OwnerName = nil
+	}
+	if !handled_ServerName && err == nil {
+		value.ServerName = nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return value, nil
+}
+
+func (value *CatalogEntry) Encode() enc.Wire {
+	encoder := CatalogEntryEncoder{}
+	encoder.Init(value)
+	return encoder.Encode(value)
+}
+
+func (value *CatalogEntry) Bytes() []byte {
+	return value.Encode().Join()
+}
+
+func ParseCatalogEntry(reader enc.WireView, ignoreCritical bool) (*CatalogEntry, error) {
+	context := CatalogEntryParsingContext{}
+	context.Init()
+	return context.Parse(reader, ignoreCritical)
+}
