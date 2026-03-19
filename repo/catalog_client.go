@@ -6,6 +6,7 @@ import (
 
 	"github.com/named-data/ndnd/repo/tlv"
 	enc "github.com/named-data/ndnd/std/encoding"
+	"github.com/named-data/ndnd/std/log"
 	"github.com/named-data/ndnd/std/ndn"
 	spec "github.com/named-data/ndnd/std/ndn/spec_2022"
 )
@@ -19,20 +20,20 @@ func lookupCatalogEntries(client ndn.Client, config *Config, fileName string, ow
 
 	info, err := sendCatalogCommand(client, config, cmdName, payload)
 	if err != nil {
-		fmt.Println("wait job failed:", err)
+		log.Error(client, "Failed to get catalog info", "err", err)
 		return nil, err
 	}
 	var result []catalogEntry
 	if err := json.Unmarshal([]byte(info), &result); err != nil {
-		fmt.Println("invalid job status payload:", err)
+		log.Error(client, "invalid job status payload", "err", err)
 		return nil, err
 	}
 	if len(result) == 0 {
-		fmt.Println("file not found in catalog")
+		log.Error(client, "file not found in catalog")
 		return nil, fmt.Errorf("file not found in catalog")
 	}
 
-	fmt.Println("Find server info success")
+	log.Info(client, "Find server info success")
 	return result, nil
 }
 
@@ -45,11 +46,11 @@ func sendCatalogInsert(client ndn.Client, config *Config, fileName string, owner
 	cmdName := config.NameN.Append(enc.NewKeywordComponent("insertcatalog")).WithVersion(enc.VersionUnixMicro)
 	_, err := sendCatalogCommand(client, config, cmdName, payload)
 	if err != nil {
-		fmt.Println("wait job failed:", err)
+		log.Error(client, "Failed to insert catalog info", "err", err)
 		return err
 	}
 
-	fmt.Println("Insert info success")
+	log.Info(client, "Insert info success")
 	return nil
 }
 func sendCatalogDelete(client ndn.Client, config *Config, fileName string, ownerName enc.Name, serverName enc.Name) error {
@@ -61,11 +62,11 @@ func sendCatalogDelete(client ndn.Client, config *Config, fileName string, owner
 	cmdName := config.NameN.Append(enc.NewKeywordComponent("deletecatalog")).WithVersion(enc.VersionUnixMicro)
 	_, err := sendCatalogCommand(client, config, cmdName, payload)
 	if err != nil {
-		fmt.Println("wait job failed:", err)
+		log.Error(client, "Failed to delete catalog info", "err", err)
 		return err
 	}
 
-	fmt.Println("Delete info success")
+	log.Info(client, "Delete info success")
 	return nil
 }
 

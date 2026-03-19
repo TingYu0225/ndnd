@@ -56,40 +56,36 @@ func checkInsertRequest(t *RepoCommandParam, args []string, cmd *cobra.Command) 
 	t.filePath = args[0]
 	_, err := os.Stat(t.filePath)
 	if err != nil {
-		fmt.Println("read file failed:", err)
+		log.Error(nil, "Read file failed", "err", err)
 		return false
 	}
 
 	// if fileName is not provided, use the base name
 	fileName, _ := cmd.Flags().GetString("filename")
 	if cmd.Flags().Changed("filename") {
-		fmt.Println("user provided --filename:", fileName)
 		if filepath.Ext(fileName) == "" {
-			fmt.Println("filename must include an extension")
+			log.Error(nil, "Filename must include an extension")
 			return false
 		}
 	} else {
-		fmt.Println("--filename not provided")
 		fileName = filepath.Base(t.filePath)
 	}
 
 	tempFileName, err := enc.NameFromStr(fileName) // decode packet name from string
 	if err != nil {
-		fmt.Println("invalid file name:", err)
+		log.Error(nil, "Invalid file name", "err", err)
 		return false
 	}
 	t.fileName = tempFileName
 
 	forwardingHint, err := enc.NameFromStr(args[1])
 	if err != nil {
-		fmt.Println("invalid server prefix:", err)
+		log.Error(nil, "Invalid server prefix", "err", err)
 		return false
 	}
 	t.forwardingHint = forwardingHint
 
-	fmt.Println("File:", t.filePath)
-	fmt.Println("File Name:", t.fileName)
-	fmt.Println("Server:", t.forwardingHint)
+	log.Info(nil, "Insertion parameters", "file", t.filePath, "name", t.fileName, "server", t.forwardingHint)
 
 	return true
 
@@ -117,10 +113,9 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	}
 
 	// Create a basic engine with a default client
-	println("Creating engine...")
 	app := engine.NewBasicEngine(engine.NewDefaultFace())
 	if err := app.Start(); err != nil {
-		fmt.Println("engine start failed:", err)
+		log.Error(nil, "Engine start failed", "err", err)
 		return
 	}
 	defer app.Stop()
@@ -128,20 +123,20 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	cliStore := storage.NewMemoryStore()
 	kc, err := keychain.NewKeyChain(config.Repo.KeyChainUri, cliStore)
 	if err != nil {
-		fmt.Println("keychain creation failed:", err)
+		log.Error(nil, "Keychain creation failed", "err", err)
 		return
 	}
 
 	// Create trust config from the configured LVS schema.
 	trust, err := config.Repo.NewTrustConfig(kc)
 	if err != nil {
-		fmt.Println("trust config creation failed:", err)
+		log.Error(nil, "Trust config creation failed", "err", err)
 		return
 	}
 
 	client := object.NewClient(app, cliStore, trust)
 	if err := client.Start(); err != nil {
-		fmt.Println("client start failed:", err)
+		log.Error(nil, "Client start failed", "err", err)
 		return
 	}
 	client.AnnouncePrefix(ndn.Announcement{
@@ -153,7 +148,7 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	// Read file content and chunk if necessary
 	content, err := os.ReadFile(t.filePath)
 	if err != nil {
-		fmt.Println("failed to read file:", err)
+		log.Error(nil, "Failed to read file", "err", err)
 		return
 	}
 
@@ -163,7 +158,7 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 		Content: enc.Wire{content},
 	})
 	if err != nil {
-		fmt.Println("failed to produce:", err)
+		log.Error(nil, "Failed to produce", "err", err)
 		return
 	}
 	// calculate endBlockID based on content size (Produce will chunk the content into segments of size 8000)
@@ -171,11 +166,9 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	lastSeg = uint64((len(content) - 1) / 8000)
 	t.endBlockID = lastSeg
 
-	fmt.Printf("Produced Data with name: %s, segments: 0-%d\n", vname.String(), lastSeg)
-	fmt.Printf("Data name: %s", dataName.String())
-	// Announce prefix of client's name
+	log.Info(nil, "Produced Data", "name", vname.String(), "segments", lastSeg)
 
-	// Create command name
+	// Send command to repo
 	cmdName := config.Repo.NameN.Append(enc.NewKeywordComponent("insert")).
 		WithVersion(enc.VersionUnixMicro)
 
@@ -186,8 +179,6 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 		},
 	}).Encode()
 
-	println("send BlobFetch command")
-	// Send command to repo
 	jobCh := make(chan string, 1)
 	done := make(chan error, 1)
 	client.ExpressCommand(t.forwardingHint, cmdName, payload, func(w enc.Wire, err error) {
@@ -215,20 +206,19 @@ func (t *RepoCommandParam) run(cmd *cobra.Command, args []string) {
 	select {
 	case err := <-done:
 		if err != nil {
-			fmt.Println("failed:", err)
+			log.Error(nil, "Failed to express command", "err", err)
 			return
 		}
 	case jobName := <-jobCh:
-		fmt.Printf("insert job started with job name: %s\n", jobName)
-		fmt.Println("insert command success")
+		log.Info(nil, "Insert job started", "jobName", jobName)
 		// polling job status until it's done or timeout
 		if _, err := waitJobResult(client, jobName); err != nil {
-			fmt.Println("wait job failed:", err)
+			log.Error(nil, "Failed to wait for job result", "err", err)
 			return
 		}
-		fmt.Println("Insert success")
+		log.Info(nil, "Insert success")
 	case <-time.After(30 * time.Second):
-		fmt.Printf("insert command timeout after %s\n", 30*time.Second)
+		log.Error(nil, "Insert command timeout", "timeout", 30*time.Second)
 	}
 
 }

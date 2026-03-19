@@ -57,14 +57,11 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	if err := t.config.Parse(); err != nil {
 		log.Fatal(nil, "Configuration error", "err", err)
 	}
-	// Find the owner of target file
-	// TODO check if this is good to go?
 
 	// Create a basic engine with a default client
-	println("Creating engine...")
 	app := engine.NewBasicEngine(engine.NewDefaultFace())
 	if err := app.Start(); err != nil {
-		fmt.Println("engine start failed:", err)
+		log.Error(nil, "Engine start failed", "err", err)
 		return
 	}
 	defer app.Stop()
@@ -72,20 +69,20 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	cliStore := storage.NewMemoryStore()
 	kc, err := keychain.NewKeyChain(t.config.KeyChainUri, cliStore)
 	if err != nil {
-		fmt.Println("keychain creation failed:", err)
+		log.Error(nil, "Keychain creation failed", "err", err)
 		return
 	}
 
 	// Create trust config from the configured LVS schema.
 	trust, err := t.config.NewTrustConfig(kc)
 	if err != nil {
-		fmt.Println("trust config creation failed:", err)
+		log.Error(nil, "Trust config creation failed", "err", err)
 		return
 	}
 
 	t.client = object.NewClient(app, cliStore, trust)
 	if err := t.client.Start(); err != nil {
-		fmt.Println("client start failed:", err)
+		log.Error(nil, "Client start failed", "err", err)
 		return
 	}
 	t.client.AnnouncePrefix(ndn.Announcement{
@@ -94,21 +91,21 @@ func (t *RepoDeleteTool) run(_ *cobra.Command, args []string) {
 	})
 	defer t.client.Stop()
 
-	// ask catalog daemon for the target file's owner and server
+	// Find the owner of target file
 	result, err := lookupCatalogEntries(t.client, t.config, t.fileName, t.config.NameN)
 	if err != nil {
-		fmt.Println("lookup catalog entries failed:", err)
+		log.Error(nil, "Failed to lookup catalog entries", "err", err)
 		return
 	}
 	if len(result) > 1 {
-		fmt.Println("More than one entries found for the file")
+		log.Warn(nil, "More than one entries found for the file")
 		return
 	}
 	t.forwardingHint, _ = enc.NameFromStr(result[0].Server)
 
 	// send delete command to repo daemon
 	if err := t.sendDeleteCommand(); err != nil {
-		fmt.Println("send delete command failed:", err)
+		log.Error(nil, "send delete command failed", "err", err)
 		return
 	}
 }
@@ -149,18 +146,17 @@ func (t *RepoDeleteTool) sendDeleteCommand() error {
 	select {
 	case err := <-done:
 		if err != nil {
-			fmt.Println("failed:", err)
+			log.Error(nil, "Failed to express delete command", "err", err)
 			return err
 		}
 	case jobName := <-jobCh:
-		fmt.Printf("delete job started with job name: %s\n", jobName)
-		fmt.Println("delete command success")
+		log.Info(nil, "Delete job started", "jobName", jobName)
 		// polling job status until it's done or timeout
 		if _, err := waitJobResult(t.client, jobName); err != nil {
-			fmt.Println("wait job failed:", err)
+			log.Error(nil, "Failed to wait for job result", "err", err)
 			return err
 		}
-		fmt.Println("Delete success")
+		log.Info(nil, "Delete success")
 	}
 	return nil
 }

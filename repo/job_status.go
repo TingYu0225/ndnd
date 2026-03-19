@@ -66,7 +66,7 @@ func publishStatus(client ndn.Client, timeout time.Duration, currentName, jobNam
 }
 
 func waitJobResult(client ndn.Client, jobName string) ([]byte, error) {
-	fmt.Println("Start waiting for job done with job name:", jobName)
+	log.Info(client, "Start waiting for job done", "jobName", jobName)
 
 	jobInterest, err := enc.NameFromStr(jobName)
 	if err != nil {
@@ -107,11 +107,11 @@ func waitJobResult(client ndn.Client, jobName string) ([]byte, error) {
 	}
 
 	for range checkTimer.C {
-		fmt.Println("Checking job status...", jobInterest.String())
+		log.Info(client, "Checking job status...", "jobInterest", jobInterest.String())
 
 		status, err := fetchText(jobInterest)
 		if err != nil {
-			fmt.Printf("status check failed: %v\n", err)
+			log.Error(client, "Status check failed", "err", err)
 			return nil, fmt.Errorf("wait job timeout: %s", jobName)
 		}
 		var st JobStatusPayload
@@ -121,15 +121,14 @@ func waitJobResult(client ndn.Client, jobName string) ([]byte, error) {
 
 		switch st.Status {
 		case "success":
-			fmt.Println("job done")
+			log.Info(client, "Job done", "jobName", jobName)
 			return st.Result, nil
 
 		case "failed":
 			return nil, fmt.Errorf("job failed: %s", st.Message)
 
 		case "processing":
-			println("job processing, will check again after", st.RetryAfter)
-			println("next interest name for status check:", st.NextInterestName)
+			log.Info(client, "Job processing", "jobName", jobName, "retryAfter", st.RetryAfter)
 			checkTimeout, err := time.ParseDuration(st.RetryAfter)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse processing time: %v\n", err)

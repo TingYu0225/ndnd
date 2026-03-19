@@ -105,7 +105,7 @@ func (c *Catalog) Start() error {
 	file, err := os.OpenFile(c.catalogPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if os.IsExist(err) {
-			log.Info(c, "Catalog file already exists, using existing catalog", "path", c.catalogPath)
+			log.Info(c, "Catalog file alredy exists, using existaing catalog", "path", c.catalogPath)
 		} else {
 			log.Error(c, "Failed to create catalog file", "err", err)
 			return err
@@ -136,7 +136,6 @@ func (c *Catalog) onCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) {
 		_ = reply((&tlv.RepoCmdRes{Status: 400, Message: "failed to parse management command"}).Encode())
 		return
 	}
-	println("DEBUG: Received Catalog", cmd)
 
 	if cmd.GetFileInfo != nil {
 		go c.handleGetFileInfo(cmd.GetFileInfo, reply)
@@ -153,7 +152,7 @@ func (c *Catalog) onCmd(_ enc.Name, wire enc.Wire, reply func(enc.Wire) error) {
 }
 
 func (c *Catalog) handleGetFileInfo(cmd *tlv.CatalogGetFileInfo, reply func(enc.Wire) error) {
-
+	log.Info(c, "Handle GetFileInfo command for file", "file", cmd.FileName, "owner", cmd.OwnerName)
 	if cmd.FileName == "" {
 		reply((&tlv.RepoCmdRes{Status: 400, Message: "file name are required"}).Encode())
 		return
@@ -164,7 +163,6 @@ func (c *Catalog) handleGetFileInfo(cmd *tlv.CatalogGetFileInfo, reply func(enc.
 	)
 	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
-	println("DEBUG: handleGetFileInfo for file", cmd.FileName)
 
 	resultCh := make(chan []byte, 1)
 	publishStatus(c.client, 1*time.Second, currentName, jobNamePrefix, resultCh)
@@ -186,7 +184,7 @@ func (c *Catalog) handleGetFileInfo(cmd *tlv.CatalogGetFileInfo, reply func(enc.
 	resultCh <- payload
 }
 func (c *Catalog) handleCatalogInsert(cmd *tlv.CatalogEntry, reply func(enc.Wire) error) {
-
+	log.Info(c, "Handle CatalogInsert command for file", "file", cmd.FileName, "owner", cmd.OwnerName.Name.String(), "server", cmd.ServerName.Name.String())
 	if cmd.FileName == "" || cmd.OwnerName == nil || cmd.ServerName == nil || cmd.OwnerName.Name.String() == "" || cmd.ServerName.Name.String() == "" {
 		reply((&tlv.RepoCmdRes{Status: 400, Message: "file name, owner name and server name are required"}).Encode())
 		return
@@ -199,7 +197,6 @@ func (c *Catalog) handleCatalogInsert(cmd *tlv.CatalogEntry, reply func(enc.Wire
 	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
 
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
-	println("DEBUG: handleCatalogInsert for file", cmd.FileName, "owner", cmd.OwnerName.Name.String(), "server", cmd.ServerName.Name.String())
 	resultCh := make(chan []byte, 1)
 	publishStatus(c.client, 1*time.Second, currentName, jobNamePrefix, resultCh)
 
@@ -215,6 +212,7 @@ func (c *Catalog) handleCatalogInsert(cmd *tlv.CatalogEntry, reply func(enc.Wire
 }
 
 func (c *Catalog) handleCatalogDelete(cmd *tlv.CatalogEntry, reply func(enc.Wire) error) {
+	log.Info(c, "Handle CatalogDelete command for file", "file", cmd.FileName, "owner", cmd.OwnerName.Name.String(), "server", cmd.ServerName.Name.String())
 	if cmd.FileName == "" || cmd.OwnerName == nil || cmd.ServerName == nil || cmd.OwnerName.Name.String() == "" || cmd.ServerName.Name.String() == "" {
 		reply((&tlv.RepoCmdRes{Status: 400, Message: "file name, owner name and server name are required"}).Encode())
 		return
@@ -226,7 +224,6 @@ func (c *Catalog) handleCatalogDelete(cmd *tlv.CatalogEntry, reply func(enc.Wire
 	)
 	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
-	println("DEBUG: handleCatalogDelete for file", cmd.FileName, "owner", cmd.OwnerName.Name.String(), "server", cmd.ServerName.Name.String())
 
 	resultCh := make(chan []byte, 1)
 	publishStatus(c.client, 1*time.Second, currentName, jobNamePrefix, resultCh)

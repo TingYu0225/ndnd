@@ -58,6 +58,7 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 
 	if cmd.ForwardingHint == nil || len(cmd.ForwardingHint.Name) == 0 || cmd.InterestName == nil || len(cmd.InterestName.Name) == 0 {
 		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid forwarding hint"}).Encode())
+		log.Warn(r, "Invalid insertion command: missing forwarding hint or interest name")
 		return
 	}
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
@@ -77,8 +78,6 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 		dirParts = append(dirParts, forwardingHint.At(i).CanonicalString())
 	}
 	dirPath := filepath.Join(dirParts...)
-	println("DEBUG: Constructed directory path for insertion:", dirPath)
-	println(forwardingHint.String())
 
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
@@ -97,19 +96,17 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 	defer file.Close()
 
 	interestName := forwardingHint.Append(cmd.InterestName.Name...)
-	//interest
-	println("Starting fetch for:", interestName.String())
 
+	//interest
+	log.Info(r, "Starting fetch for", "name", interestName.String())
 	done := make(chan error, 1)
-	println("DEBUG: About to call ConsumeExt for name:", interestName.String())
 	r.client.ConsumeExt(ndn.ConsumeExtArgs{
 		Name:           interestName,
 		TryStore:       true,
 		IgnoreValidity: optional.Some(r.config.IgnoreValidity),
 		Callback: func(state ndn.ConsumeState) {
-			println("DEBUG: Callback invoked - Error:", state.Error(), "Complete:", state.IsComplete(), "Progress:", state.Progress())
 			if state.Error() != nil { // fetch failed
-				println("DEBUG: Error in fetch:", state.Error().Error())
+				log.Error(r, "Error in fetch", "err", state.Error().Error())
 				select {
 				case done <- state.Error():
 				default:
@@ -117,11 +114,11 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 				return
 			}
 			for _, chunk := range state.Content() {
-				println("DEBUG: Received chunk of size:", len(chunk))
+				log.Info(r, "Received chunk of size", "size", len(chunk))
 				file.Write(chunk)
 			}
 			if state.IsComplete() { // fetch succeeded
-				println("DEBUG: Fetch complete")
+				log.Info(r, "Fetch complete")
 				select {
 				case done <- nil:
 				default:
@@ -129,19 +126,18 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 			}
 		},
 	})
-	println("DEBUG: ConsumeExt returned, waiting for done channel...")
 
 	select {
 	case err := <-done: // fetch completed or failedq
 		if err != nil {
 			payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: err.Error()})
 			resultCh <- payload
-			println("DEBUG: Fetch failed with error:", err.Error())
+			log.Error(r, "Fetch failed with error", "err", err.Error())
 		}
 	case <-time.After(8 * time.Second):
 		payload, _ := json.Marshal(JobStatusPayload{Status: "failed", Message: "fetch timeout"})
 		resultCh <- payload
-		println("DEBUG: select timeout")
+		log.Warn(r, "Select timeout")
 	}
 
 	err = sendCatalogInsert(r.client, r.config, fileName, forwardingHint, r.config.NameN)
@@ -153,7 +149,7 @@ func (r *Repo) handleInsertion(cmd *tlv.RepoCmdInsert, reply func(enc.Wire) erro
 	// updateFileOwner(r.config.CatalogPath, fileName, r.config.Name) // add user name
 	payload, _ := json.Marshal(JobStatusPayload{Status: "success"})
 	resultCh <- payload
-	println("DEBUG: reply completed")
+	log.Info(r, "Insertion Command Reply completed")
 }
 
 func (r *Repo) handleDeletion(cmd *tlv.RepoCmdDelete, reply func(enc.Wire) error) {
@@ -208,7 +204,7 @@ func (r *Repo) handleDeletion(cmd *tlv.RepoCmdDelete, reply func(enc.Wire) error
 	//deleteFileFromCatalog(r.config.CatalogPath, fileName)
 	payload, _ := json.Marshal(JobStatusPayload{Status: "success"})
 	resultCh <- payload
-	println("delete file success")
+	log.Info(r, "File deleted successfully", "file", fileName)
 }
 
 // (AI GENERATED DESCRIPTION): Handles a `SyncJoin` command by starting an SVS session when the protocol is `SyncProtocolSvsV3`, or returning an error status if the protocol is unknown or the session fails to start.
