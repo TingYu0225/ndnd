@@ -115,8 +115,8 @@ func (t *RepoDeleteTool) sendDeleteCommand() error {
 	done := make(chan error, 1)
 	payload := (&tlv.RepoCmd{
 		RepoCmdDelete: &tlv.RepoCmdDelete{
-			FileName:       t.fileName,
-			ForwardingHint: &spec.NameContainer{Name: t.config.NameN},
+			FileName:  t.fileName,
+			OwnerName: &spec.NameContainer{Name: t.config.NameN},
 		},
 	}).Encode()
 

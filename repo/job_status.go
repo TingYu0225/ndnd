@@ -13,7 +13,7 @@ import (
 )
 
 type JobStatusPayload struct {
-	Status           string          `json:"status"` // processing | done | failed
+	Status           string          `json:"status"` // processing | success | failed
 	NextInterestName string          `json:"next_interest_name"`
 	RetryAfter       string          `json:"retry_after"`
 	Message          string          `json:"message,omitempty"`

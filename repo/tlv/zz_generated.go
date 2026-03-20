@@ -598,27 +598,27 @@ func ParseRepoCmdInsert(reader enc.WireView, ignoreCritical bool) (*RepoCmdInser
 type RepoCmdDeleteEncoder struct {
 	Length uint
 
-	ForwardingHint_encoder spec.NameContainerEncoder
+	OwnerName_encoder spec.NameContainerEncoder
 }
 
 type RepoCmdDeleteParsingContext struct {
-	ForwardingHint_context spec.NameContainerParsingContext
+	OwnerName_context spec.NameContainerParsingContext
 }
 
 func (encoder *RepoCmdDeleteEncoder) Init(value *RepoCmdDelete) {
 
-	if value.ForwardingHint != nil {
-		encoder.ForwardingHint_encoder.Init(value.ForwardingHint)
+	if value.OwnerName != nil {
+		encoder.OwnerName_encoder.Init(value.OwnerName)
 	}
 
 	l := uint(0)
 	l += 3
 	l += uint(enc.TLNum(len(value.FileName)).EncodingLength())
 	l += uint(len(value.FileName))
-	if value.ForwardingHint != nil {
+	if value.OwnerName != nil {
 		l += 3
-		l += uint(enc.TLNum(encoder.ForwardingHint_encoder.Length).EncodingLength())
-		l += encoder.ForwardingHint_encoder.Length
+		l += uint(enc.TLNum(encoder.OwnerName_encoder.Length).EncodingLength())
+		l += encoder.OwnerName_encoder.Length
 	}
 	encoder.Length = l
 
@@ -626,7 +626,7 @@ func (encoder *RepoCmdDeleteEncoder) Init(value *RepoCmdDelete) {
 
 func (context *RepoCmdDeleteParsingContext) Init() {
 
-	context.ForwardingHint_context.Init()
+	context.OwnerName_context.Init()
 }
 
 func (encoder *RepoCmdDeleteEncoder) EncodeInto(value *RepoCmdDelete, buf []byte) {
@@ -639,14 +639,14 @@ func (encoder *RepoCmdDeleteEncoder) EncodeInto(value *RepoCmdDelete, buf []byte
 	pos += uint(enc.TLNum(len(value.FileName)).EncodeInto(buf[pos:]))
 	copy(buf[pos:], value.FileName)
 	pos += uint(len(value.FileName))
-	if value.ForwardingHint != nil {
+	if value.OwnerName != nil {
 		buf[pos] = 253
 		binary.BigEndian.PutUint16(buf[pos+1:], uint16(7606))
 		pos += 3
-		pos += uint(enc.TLNum(encoder.ForwardingHint_encoder.Length).EncodeInto(buf[pos:]))
-		if encoder.ForwardingHint_encoder.Length > 0 {
-			encoder.ForwardingHint_encoder.EncodeInto(value.ForwardingHint, buf[pos:])
-			pos += encoder.ForwardingHint_encoder.Length
+		pos += uint(enc.TLNum(encoder.OwnerName_encoder.Length).EncodeInto(buf[pos:]))
+		if encoder.OwnerName_encoder.Length > 0 {
+			encoder.OwnerName_encoder.EncodeInto(value.OwnerName, buf[pos:])
+			pos += encoder.OwnerName_encoder.Length
 		}
 	}
 }
@@ -664,7 +664,7 @@ func (encoder *RepoCmdDeleteEncoder) Encode(value *RepoCmdDelete) enc.Wire {
 func (context *RepoCmdDeleteParsingContext) Parse(reader enc.WireView, ignoreCritical bool) (*RepoCmdDelete, error) {
 
 	var handled_FileName bool = false
-	var handled_ForwardingHint bool = false
+	var handled_OwnerName bool = false
 
 	progress := -1
 	_ = progress
@@ -706,8 +706,8 @@ func (context *RepoCmdDeleteParsingContext) Parse(reader enc.WireView, ignoreCri
 			case 7606:
 				if true {
 					handled = true
-					handled_ForwardingHint = true
-					value.ForwardingHint, err = context.ForwardingHint_context.Parse(reader.Delegate(int(l)), ignoreCritical)
+					handled_OwnerName = true
+					value.OwnerName, err = context.OwnerName_context.Parse(reader.Delegate(int(l)), ignoreCritical)
 				}
 			default:
 				if !ignoreCritical && ((typ <= 31) || ((typ & 1) == 1)) {
@@ -730,8 +730,8 @@ func (context *RepoCmdDeleteParsingContext) Parse(reader enc.WireView, ignoreCri
 	if !handled_FileName && err == nil {
 		err = enc.ErrSkipRequired{Name: "FileName", TypeNum: 7605}
 	}
-	if !handled_ForwardingHint && err == nil {
-		value.ForwardingHint = nil
+	if !handled_OwnerName && err == nil {
+		value.OwnerName = nil
 	}
 
 	if err != nil {

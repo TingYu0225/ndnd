@@ -42,7 +42,7 @@ type RepoCmdDelete struct {
 	//+field:string
 	FileName string `tlv:"0x1DB5"`
 	//+field:struct:spec.NameContainer
-	ForwardingHint *spec.NameContainer `tlv:"0x1DB6"`
+	OwnerName *spec.NameContainer `tlv:"0x1DB6"`
 }
 
 type SyncJoin struct {

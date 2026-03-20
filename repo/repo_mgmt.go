@@ -158,11 +158,11 @@ func (r *Repo) handleDeletion(cmd *tlv.RepoCmdDelete, reply func(enc.Wire) error
 		enc.NewGenericComponent(fmt.Sprintf("%d", time.Now().UnixNano())),
 	)
 	currentName := jobNamePrefix.WithVersion(enc.VersionUnixMicro)
-	if cmd.ForwardingHint == nil || len(cmd.ForwardingHint.Name) == 0 || cmd.FileName == "" {
-		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid forwarding hint or file name"}).Encode())
+	if cmd.OwnerName == nil || len(cmd.OwnerName.Name) == 0 || cmd.FileName == "" {
+		reply((&tlv.RepoCmdRes{Status: 400, Message: "invalid owner name or file name"}).Encode())
 		return
 	}
-	forwardingHint := cmd.ForwardingHint.Name
+	forwardingHint := cmd.OwnerName.Name
 	reply((&tlv.RepoCmdRes{Status: 200, Message: currentName.String()}).Encode())
 	resultCh := make(chan []byte, 1)
 	// TODO: replace with better timeout calculation based on file size or other factors
